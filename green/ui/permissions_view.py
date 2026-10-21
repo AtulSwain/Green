@@ -7,6 +7,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QCheckBox,
     QFileDialog,
     QHBoxLayout,
     QHeaderView,
@@ -25,9 +26,8 @@ from pydantic import ValidationError
 
 from ..app.bootstrap import AppServices
 from ..config import format_validation_error, normalize_site
-from ..services.tool_registry import RESTRICTED_CAPABILITIES, ToolCategory
+from ..services.tool_registry import RESTRICTED_CAPABILITIES
 
-CATEGORY_LABELS = {ToolCategory.READ: "Read", ToolCategory.WRITE: "Controlled write (asks first)"}
 
 
 def _is_broad_directory(path: Path) -> bool:
@@ -49,7 +49,8 @@ class PermissionsView(QWidget):
         layout.addWidget(title)
         intro = QLabel(
             "The model can only request tools you enable here. Every tool call is checked against these "
-            "settings, and anything that changes files or opens programs asks you first."
+            "settings at the moment it runs. Read tools run without asking; controlled tools ask you every "
+            "time (an approval is never remembered). See Tool activity for what happened."
         )
         intro.setObjectName("Muted")
         intro.setWordWrap(True)
@@ -59,8 +60,6 @@ class PermissionsView(QWidget):
         self.tabs.addTab(self._build_tools_tab(), "Tools")
         self.tabs.addTab(self._build_folders_tab(), "Folders")
         self.tabs.addTab(self._build_apps_tab(), "Applications && websites")
-        self.tabs.addTab(self._build_audit_tab(), "Audit log")
-        self.tabs.currentChanged.connect(lambda i: self.refresh_audit() if i == 3 else None)
         layout.addWidget(self.tabs, 1)
         self.refresh()
 
@@ -197,7 +196,7 @@ class PermissionsView(QWidget):
         row.addStretch(1)
         layout.addLayout(row)
         layout.addSpacing(12)
-        layout.addWidget(QLabel("Allowed websites (open_website can open pages on these sites and their subdomains)"))
+        layout.addWidget(QLabel("Allowed websites (open_website opens these sites and their subdomains without asking)"))
         self.site_list = QListWidget()
         layout.addWidget(self.site_list, 1)
         row2 = QHBoxLayout()
@@ -209,6 +208,12 @@ class PermissionsView(QWidget):
         row2.addWidget(remove_site)
         row2.addStretch(1)
         layout.addLayout(row2)
+        self.confirm_unlisted = QCheckBox("Allow other websites after asking me each time")
+        self.confirm_unlisted.setToolTip("When off, open_website refuses every site that is not on the list above")
+        self.confirm_unlisted.toggled.connect(
+            lambda on: None if self._loading else self._save(lambda c: setattr(c.tools, "confirm_unlisted_websites", on))
+        )
+        layout.addWidget(self.confirm_unlisted)
         return page
 
     def _add_app(self) -> None:
@@ -243,37 +248,6 @@ class PermissionsView(QWidget):
             host = item.text()
             self._save(lambda c: setattr(c.tools, "allowed_websites", [s for s in c.tools.allowed_websites if s != host]))
 
-    # -- audit tab ---------------------------------------------------------------------------------------
-    def _build_audit_tab(self) -> QWidget:
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.addWidget(self._muted("Every tool request, with the permission decision and outcome. File contents are never logged."))
-        self.audit_table = QTableWidget(0, 5)
-        self.audit_table.setHorizontalHeaderLabels(["Time", "Tool", "Decision", "Outcome", "Detail"])
-        self.audit_table.verticalHeader().setVisible(False)
-        self.audit_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.audit_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
-        layout.addWidget(self.audit_table, 1)
-        refresh = QPushButton("Refresh")
-        refresh.clicked.connect(self.refresh_audit)
-        row = QHBoxLayout()
-        row.addWidget(refresh)
-        row.addStretch(1)
-        layout.addLayout(row)
-        return page
-
-    def refresh_audit(self) -> None:
-        entries = self.services.audit.recent(200)
-        self.audit_table.setRowCount(len(entries))
-        for row, entry in enumerate(entries):
-            values = [f"{entry.timestamp.astimezone():%d %b %H:%M:%S}", entry.tool_name, entry.decision, entry.outcome, entry.detail]
-            for col, value in enumerate(values):
-                item = QTableWidgetItem(value)
-                item.setToolTip(value)
-                self.audit_table.setItem(row, col, item)
-        self.audit_table.resizeColumnsToContents()
-        self.audit_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
-
     # -- refresh -------------------------------------------------------------------------------------------
     def refresh(self) -> None:
         config = self.services.config_store.get()
@@ -287,7 +261,7 @@ class PermissionsView(QWidget):
             name.setData(Qt.ItemDataRole.UserRole, tool.name)
             name.setToolTip("Tick to allow the model to request this tool")
             self.tool_table.setItem(row, 0, name)
-            self.tool_table.setItem(row, 1, QTableWidgetItem(CATEGORY_LABELS.get(tool.category, tool.category.value)))
+            self.tool_table.setItem(row, 1, QTableWidgetItem(tool.category.label))
             self.tool_table.setItem(row, 2, QTableWidgetItem(tool.description))
         self.tool_table.resizeRowsToContents()
         self._loading = False
@@ -304,3 +278,6 @@ class PermissionsView(QWidget):
             self.app_table.setItem(row, 1, QTableWidgetItem(path))
         self.site_list.clear()
         self.site_list.addItems(config.tools.allowed_websites)
+        self._loading = True
+        self.confirm_unlisted.setChecked(config.tools.confirm_unlisted_websites)
+        self._loading = False

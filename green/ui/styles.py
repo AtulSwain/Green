@@ -174,6 +174,12 @@ QLabel#MessageMeta {{ color: {t.text_muted}; font-size: {font_pt - 1}pt; }}
 QLabel#MessageMeta[state="error"] {{ color: {t.danger}; }}
 QLabel#MessageMeta[state="cancelled"] {{ color: {t.warning}; }}
 
+QLabel#ToolStep {{ color: {t.text_muted}; font-size: {font_pt - 1}pt; padding: 1px 0; }}
+QLabel#ToolStep[state="running"] {{ color: {t.text}; }}
+QLabel#ToolStep[state="waiting"] {{ color: {t.warning}; }}
+QLabel#ToolStep[state="ok"] {{ color: {t.success}; }}
+QLabel#ToolStep[state="failed"] {{ color: {t.danger}; }}
+
 QFrame#Banner {{ border-radius: {RADIUS}px; border: 1px solid {t.border}; background: {t.surface}; }}
 QFrame#Banner[kind="error"] {{ border-color: {t.danger}; }}
 QFrame#Banner[kind="warning"] {{ border-color: {t.warning}; }}

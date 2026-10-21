@@ -26,8 +26,19 @@ class _PendingConfirmation:
         self.approved = False
 
 
+ConfirmHandler = Callable[[ConfirmationRequest, Callable[[bool], None]], "Callable[[], None] | None"]
+
+
 class ChatController(QObject):
+    """Runs one assistant turn at a time on a worker thread.
+
+    Tool approvals are asynchronous: ``confirm_handler(request, respond)`` shows the request
+    (without blocking the event loop) and later calls ``respond(approved)``. It may return a
+    function that closes the request; that is called if the user presses Stop meanwhile.
+    """
+
     busy_changed = Signal(bool)
+    tool_event = Signal(str, object)  # conversation_id, ToolEvent
     user_message_added = Signal(object)  # Message
     text_updated = Signal(str, str)  # conversation_id, visible text so far
     status_changed = Signal(str)
@@ -39,7 +50,7 @@ class ChatController(QObject):
         engine: ChatEngine,
         conversations: ConversationService,
         runner: TaskRunner,
-        confirm_handler: Callable[[ConfirmationRequest], bool],
+        confirm_handler: ConfirmHandler,
         parent: QObject | None = None,
     ):
         super().__init__(parent)
@@ -50,6 +61,8 @@ class ChatController(QObject):
         self._cancel: CancelToken | None = None
         self._conversation_id: str | None = None
         self._pending_text: str | None = None
+        self._pending_confirmation: _PendingConfirmation | None = None
+        self._close_confirmation: Callable[[], None] | None = None
         self._flush_timer = QTimer(self)
         self._flush_timer.setInterval(TEXT_FLUSH_MS)
         self._flush_timer.timeout.connect(self._flush_text)
@@ -102,6 +115,7 @@ class ChatController(QObject):
                 on_text=lambda text: progress(("text", text)),
                 on_status=lambda status: progress(("status", status)),
                 confirm=confirm,
+                on_tool_event=lambda event: progress(("tool", event)),
             )
 
         self.runner.submit(work, on_done=self._on_done, on_error=self._on_error, on_progress=self._on_progress)
@@ -110,6 +124,28 @@ class ChatController(QObject):
         if self._cancel is not None:
             self._cancel.cancel()
             self.status_changed.emit("Stopping…")
+        # A pending approval is withdrawn: the action will not run.
+        pending, close = self._pending_confirmation, self._close_confirmation
+        if pending is not None:
+            self._resolve(pending, False)
+            if close is not None:
+                try:
+                    close()
+                except Exception:
+                    log.exception("Closing the approval request failed")
+
+    @property
+    def awaiting_approval(self) -> bool:
+        return self._pending_confirmation is not None
+
+    def _resolve(self, pending: _PendingConfirmation, approved: bool) -> None:
+        if pending.event.is_set():
+            return  # already answered (e.g. Stop, then the dialog closed)
+        pending.approved = approved and not (self._cancel is None or self._cancel.cancelled)
+        pending.event.set()
+        if self._pending_confirmation is pending:
+            self._pending_confirmation = None
+            self._close_confirmation = None
 
     def _on_progress(self, payload) -> None:
         kind, value = payload
@@ -117,15 +153,22 @@ class ChatController(QObject):
             self._pending_text = value
         elif kind == "status":
             self.status_changed.emit(value)
+        elif kind == "tool":
+            self.tool_event.emit(self._conversation_id or "", value)
+            if value.phase == "awaiting_approval":
+                self.status_changed.emit(f"Waiting for your approval: {value.description}")
+            elif value.phase == "running":
+                self.status_changed.emit(f"Running: {value.description}")
         elif kind == "confirm":
-            approved = False
-            if self._cancel is not None and not self._cancel.cancelled:
-                try:
-                    approved = bool(self.confirm_handler(value.request))
-                except Exception:
-                    log.exception("Confirmation dialog failed")
-            value.approved = approved
-            value.event.set()
+            if self._cancel is None or self._cancel.cancelled:
+                self._resolve(value, False)
+                return
+            self._pending_confirmation = value
+            try:
+                self._close_confirmation = self.confirm_handler(value.request, lambda ok, p=value: self._resolve(p, ok))
+            except Exception:
+                log.exception("Showing the approval request failed")
+                self._resolve(value, False)
 
     def _flush_text(self) -> None:
         if self._pending_text is not None and self._conversation_id is not None:
@@ -133,6 +176,8 @@ class ChatController(QObject):
             self.text_updated.emit(self._conversation_id, text)
 
     def _finish(self) -> str | None:
+        if self._pending_confirmation is not None:  # should not happen; never leave an approval open
+            self.stop()
         self._flush_text()
         self._flush_timer.stop()
         conversation_id = self._conversation_id

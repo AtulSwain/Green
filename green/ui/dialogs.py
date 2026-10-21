@@ -81,7 +81,13 @@ class ConfirmationDialog(QDialog):
                 self.resize(820, 600)
             layout.addWidget(details, 1)
 
-        if request.destructive:
+        for text in request.warnings:
+            warning = QLabel(f"⚠  {text}")
+            warning.setObjectName("WarningText")
+            warning.setWordWrap(True)
+            layout.addWidget(warning)
+
+        if request.destructive and not request.warnings:
             warning = QLabel("This changes an existing file. A backup copy is kept, but please review carefully.")
             warning.setObjectName("WarningText")
             warning.setWordWrap(True)

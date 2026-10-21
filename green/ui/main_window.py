@@ -31,6 +31,7 @@ from .memory_view import MemoryView
 from .permissions_view import PermissionsView
 from .reminders_view import RemindersView
 from .settings_view import SettingsView
+from .tool_activity_view import ToolActivityView
 from .sidebar import Sidebar
 from .styles import build_stylesheet, repolish, theme_for
 from .voice_view import VoiceView
@@ -56,6 +57,7 @@ class MainWindow(QMainWindow):
         services.tool_context.current_conversation = lambda: self.controller.active_conversation
         self._status_check_running = False
         self._open_reminders: dict[str, QMessageBox] = {}
+        self._active_dialogs: set = set()
         self._shutting_down = False
 
         central = QWidget()
@@ -73,6 +75,7 @@ class MainWindow(QMainWindow):
         self.reminders_view = RemindersView(services)
         self.workspace_view = WorkspaceView(services, self.runner)
         self.permissions_view = PermissionsView(services)
+        self.activity_view = ToolActivityView(services)
         self.voice_view = VoiceView(services, self.runner)
         self.settings_view = SettingsView(services, self.runner)
         self.diagnostics_view = DiagnosticsView(services, self.runner)
@@ -82,6 +85,7 @@ class MainWindow(QMainWindow):
             "reminders": self.reminders_view,
             "workspace": self.workspace_view,
             "permissions": self.permissions_view,
+            "activity": self.activity_view,
             "voice": self.voice_view,
             "settings": self.settings_view,
             "diagnostics": self.diagnostics_view,
@@ -109,6 +113,7 @@ class MainWindow(QMainWindow):
         self.chat_view.conversation_created.connect(lambda conv_id: self.sidebar.reload(conv_id))
         self.chat_view.conversation_changed.connect(lambda: self.sidebar.reload(self.chat_view.conversation_id))
         self.controller.busy_changed.connect(self._on_busy)
+        self.controller.tool_event.connect(self._on_tool_event)
         self.settings_view.settings_saved.connect(self._settings_saved)
         self.workspace_view.ask_about.connect(self._ask_about_file)
 
@@ -154,6 +159,8 @@ class MainWindow(QMainWindow):
             self.reminders_view.refresh()
         elif key == "permissions":
             self.permissions_view.refresh()
+        elif key == "activity":
+            self.activity_view.refresh()
         elif key == "settings":
             self.settings_view.load()
         self.stack.setCurrentWidget(page)
@@ -190,12 +197,38 @@ class MainWindow(QMainWindow):
     def _on_busy(self, busy: bool) -> None:
         self.status_check.setEnabled(not busy)
 
-    # -- tool confirmations (called on the GUI thread) ------------------------------------------------
-    def _confirm(self, request: ConfirmationRequest) -> bool:
+    # -- tool confirmations (GUI thread, non-blocking) -------------------------------------------------
+    def _confirm(self, request: ConfirmationRequest, respond):
+        """Show an approval dialog without blocking the event loop. Returns a closer used by Stop."""
         if self._shutting_down:
-            return False
+            respond(False)
+            return None
         dialog = ConfirmationDialog(request, self, self.current_theme())
-        return dialog.exec() == QDialog.DialogCode.Accepted
+        dialog.setWindowModality(Qt.WindowModality.NonModal)  # Stop and the rest of GREEN stay usable
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        answered = [False]
+
+        def finished(code: int) -> None:
+            if not answered[0]:
+                answered[0] = True
+                respond(code == QDialog.DialogCode.Accepted)
+            self._active_dialogs.discard(dialog)
+
+        def close() -> None:
+            answered[0] = True  # the controller already recorded the decline
+            dialog.reject()
+
+        dialog.finished.connect(finished)
+        self._active_dialogs.add(dialog)
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        QApplication.alert(self)
+        return close
+
+    def _on_tool_event(self, _conversation_id: str, event) -> None:
+        if event.phase == "finished" and self.stack.currentWidget() is self.activity_view:
+            self.activity_view.refresh()
 
     # -- model status ---------------------------------------------------------------------------------------
     def check_status(self) -> None:
@@ -215,6 +248,8 @@ class MainWindow(QMainWindow):
             self._set_status("error", f"Ollama not reachable at {status.base_url}. Start Ollama, then click Check now.")
         elif not status.model_installed:
             self._set_status("warning", f"Ollama {status.version} connected · model '{status.model}' not installed — run: ollama pull {status.model}{remote}")
+        elif status.supports_tools is False:
+            self._set_status("warning", f"Ollama {status.version} · {status.model} ready · this model does not support tools{remote}")
         else:
             self._set_status("ok", f"Ollama {status.version} · {status.model} ready{remote}")
         self.chat_view.set_model_ready(status.ready)
@@ -288,7 +323,9 @@ class MainWindow(QMainWindow):
         self._shutting_down = True
         self.status_timer.stop()
         self.reminder_timer.stop()
-        self.controller.stop()
+        self.controller.stop()  # also withdraws a pending approval
+        for dialog in list(self._active_dialogs):
+            dialog.reject()
         self.services.voice_output.stop()
         if self.services.voice_input.is_recording:
             try:

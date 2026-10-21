@@ -25,6 +25,7 @@ NAV_ITEMS = (
     ("reminders", "Reminders"),
     ("workspace", "Workspace"),
     ("permissions", "Tools && Permissions"),
+    ("activity", "Tool activity"),
     ("voice", "Voice"),
     ("settings", "Settings"),
     ("diagnostics", "Diagnostics"),

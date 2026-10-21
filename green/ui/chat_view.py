@@ -32,6 +32,37 @@ from .workers import TaskRunner
 log = logging.getLogger(__name__)
 
 STATUS_LABELS = {"cancelled": "Stopped by you", "error": "Incomplete — an error occurred"}
+STEP_MARKERS = {"running": "…", "waiting": "?", "ok": "✓", "failed": "✗"}
+OUTCOME_LABELS = {
+    "declined": "not run",
+    "denied": "not permitted",
+    "rejected": "invalid request",
+    "cancelled": "not run",
+}
+
+
+def step_text_from_record(record: dict) -> str:
+    """Text for a finished tool step, from a ToolResult.to_record() dict (or the Stage 1 format)."""
+    description = record.get("description") or f"Tool {record.get('tool')}"
+    detail = record.get("summary") or ""
+    if not record.get("ok"):
+        reason = OUTCOME_LABELS.get(record.get("decision", ""), "failed")
+        detail = f"{reason}: {detail}" if detail else reason
+    return f"{description} — {detail}" if detail else description
+
+
+def step_state_from_event(event) -> str:
+    if event.phase == "finished":
+        return "ok" if event.result is not None and event.result.ok else "failed"
+    return "waiting" if event.phase == "awaiting_approval" else "running"
+
+
+def step_text_from_event(event) -> str:
+    if event.phase == "finished" and event.result is not None:
+        return step_text_from_record(event.result.to_record())
+    if event.phase == "awaiting_approval":
+        return f"{event.description} — waiting for your approval"
+    return event.description
 
 
 class Banner(QFrame):
@@ -108,6 +139,11 @@ class MessageWidget(QFrame):
         self.body.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         layout.addWidget(self.body)
 
+        self.steps_box = QVBoxLayout()
+        self.steps_box.setSpacing(2)
+        layout.addLayout(self.steps_box)
+        self._steps: dict[object, QLabel] = {}
+
         self.meta = QLabel()
         self.meta.setObjectName("MessageMeta")
         self.meta.setWordWrap(True)
@@ -122,18 +158,30 @@ class MessageWidget(QFrame):
         self.copy_button.setEnabled(has_text)
         self.remember_button.setEnabled(has_text)
 
+    def update_step(self, key, text: str, state: str) -> None:
+        """Show or update one tool step. ``state``: running | waiting | ok | failed."""
+        label = self._steps.get(key)
+        if label is None:
+            label = QLabel()
+            label.setObjectName("ToolStep")
+            label.setWordWrap(True)
+            label.setTextFormat(Qt.TextFormat.PlainText)
+            label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            self.steps_box.addWidget(label)
+            self._steps[key] = label
+        marker = STEP_MARKERS.get(state, "•")
+        label.setText(f"{marker}  {text}")
+        label.setProperty("state", state)
+        repolish(label)
+
     def set_status(self, status: str, tools: list) -> None:
         parts = []
         if status in STATUS_LABELS:
             parts.append(STATUS_LABELS[status])
-        if tools:
-            names = []
-            for item in tools:
+        if tools and not self._steps:
+            for index, item in enumerate(tools):
                 if isinstance(item, dict):
-                    mark = "" if item.get("ok") else f" ({item.get('decision', 'failed')})"
-                    names.append(f"{item.get('tool')}{mark}")
-            if names:
-                parts.append("Tools: " + ", ".join(names))
+                    self.update_step(("saved", index), step_text_from_record(item), "ok" if item.get("ok") else "failed")
         self.meta.setText(" · ".join(parts))
         self.meta.setVisible(bool(parts))
         self.meta.setProperty("state", status)
@@ -184,6 +232,7 @@ class ChatView(QWidget):
         self._load_token = 0
         self._stream_widget: MessageWidget | None = None
         self._stream_text = ""
+        self._stream_steps: dict[int, object] = {}
         self._model_ready = True
         self._speaking = False
 
@@ -277,6 +326,7 @@ class ChatView(QWidget):
         controller.text_updated.connect(self._on_text)
         controller.generation_finished.connect(self._on_finished)
         controller.generation_failed.connect(self._on_failed)
+        controller.tool_event.connect(self._on_tool_event)
 
         self.apply_config()
         self.show_conversation(None)
@@ -357,6 +407,8 @@ class ChatView(QWidget):
             self._append_message(message)
         if self.controller.active_conversation == self.conversation_id:
             self._stream_widget = self._append_widget(MessageWidget("assistant", self._stream_text))
+            for call_id, event in self._stream_steps.items():
+                self._stream_widget.update_step(call_id, step_text_from_event(event), step_state_from_event(event))
         self.stack.setCurrentWidget(self.scroll if messages or self._stream_widget else self.empty_state)
         self._stick_to_bottom = True
         self._scroll_to_bottom()
@@ -428,6 +480,8 @@ class ChatView(QWidget):
         self.conversation_changed.emit()
 
     def _on_busy(self, busy: bool) -> None:
+        if busy:
+            self._stream_steps = {}
         if busy and self.controller.active_conversation == self.conversation_id:
             self._stream_text = ""
             self._stream_widget = self._append_widget(MessageWidget("assistant", ""))
@@ -437,6 +491,11 @@ class ChatView(QWidget):
         self._stream_text = text
         if conversation_id == self.conversation_id and self._stream_widget is not None:
             self._stream_widget.set_content(text)
+
+    def _on_tool_event(self, conversation_id: str, event) -> None:
+        self._stream_steps[event.call_id] = event
+        if conversation_id == self.conversation_id and self._stream_widget is not None:
+            self._stream_widget.update_step(event.call_id, step_text_from_event(event), step_state_from_event(event))
 
     def _on_finished(self, conversation_id: str, result: GenerationResult) -> None:
         widget = self._stream_widget if conversation_id == self.conversation_id else None
@@ -448,10 +507,14 @@ class ChatView(QWidget):
                 widget.set_status(result.message.status, result.tools_used)
             else:
                 widget.deleteLater()
+        self._stream_steps = {}
         if result.status == "error":
             self._banner_action_kind = "retry"
             if conversation_id == self.conversation_id:
                 self.banner.show_message(result.error, "error", "Retry")
+        elif result.notices and conversation_id == self.conversation_id:
+            self._banner_action_kind = ""
+            self.banner.show_message(" ".join(result.notices), "warning")
         elif result.status == "complete":
             self._maybe_speak(result.text)
         self.conversation_changed.emit()
@@ -461,6 +524,7 @@ class ChatView(QWidget):
         if self._stream_widget is not None:
             self._stream_widget.deleteLater()
             self._stream_widget = None
+        self._stream_steps = {}
         self._banner_action_kind = "retry"
         self.banner.show_message(message, "error", "Retry")
         self._update_controls()
