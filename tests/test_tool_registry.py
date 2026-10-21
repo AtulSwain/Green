@@ -19,7 +19,7 @@ def last_audit(services):
 
 def test_enabled_by_default_only_safe_tools(services):
     names = {s["function"]["name"] for s in services.registry.model_schemas()}
-    assert names == {"get_datetime", "get_app_info", "get_system_info"}
+    assert names == {"get_datetime", "get_app_info", "get_system_info", "calculate", "create_reminder", "save_memory"}
 
 
 def test_disabled_tool_is_denied_and_audited(services):

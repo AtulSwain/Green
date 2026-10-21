@@ -38,7 +38,7 @@ def test_tool_call_round_trip(services, fake_ollama):
     tool_msg = second[-1]
     assert tool_msg["role"] == "tool" and json.loads(tool_msg["content"])["ok"] is True
     chat_requests = [r for r in fake_ollama.requests if r["path"] == "/api/chat"]
-    assert {t["function"]["name"] for t in chat_requests[0]["body"]["tools"]} == {"get_datetime", "get_app_info", "get_system_info"}
+    assert {t["function"]["name"] for t in chat_requests[0]["body"]["tools"]} == {"get_datetime", "get_app_info", "get_system_info", "calculate", "create_reminder", "save_memory"}
 
 
 def test_malformed_tool_calls_do_not_crash(services, fake_ollama):

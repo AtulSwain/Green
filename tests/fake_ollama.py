@@ -15,7 +15,9 @@ from typing import Any
 
 def text_chunks(text: str, size: int = 4) -> list[dict[str, Any]]:
     chunks = [{"message": {"role": "assistant", "content": text[i : i + size]}, "done": False} for i in range(0, len(text), size)]
-    chunks.append({"message": {"role": "assistant", "content": ""}, "done": True, "done_reason": "stop"})
+    chunks.append({"message": {"role": "assistant", "content": ""}, "done": True, "done_reason": "stop",
+                   "eval_count": 50, "eval_duration": 2_000_000_000, "prompt_eval_count": 20,
+                   "load_duration": 1_500_000_000})
     return chunks
 
 

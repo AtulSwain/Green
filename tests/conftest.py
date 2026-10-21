@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+os.environ.setdefault("GREEN_TTS_ENGINE", "mock")  # Qt's built-in test speech engine; no audio device needed
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from green.app.bootstrap import build_services  # noqa: E402

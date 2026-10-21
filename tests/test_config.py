@@ -13,7 +13,7 @@ def test_defaults_are_local_and_deny_by_default():
     assert config.ollama.model == "qwen3:8b"
     assert config.ollama.is_local
     enabled = {name for name, on in config.tools.enabled_tools.items() if on}
-    assert enabled == {"get_datetime", "get_app_info", "get_system_info"}
+    assert enabled == {"get_datetime", "get_app_info", "get_system_info", "calculate", "create_reminder", "save_memory"}
     assert config.tools.approved_directories == []
     assert config.voice.enabled is False
     assert config.voice.allow_model_download is False
