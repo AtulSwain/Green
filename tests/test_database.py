@@ -120,3 +120,21 @@ def test_database_usable_from_worker_thread(tmp_path):
     assert not errors
     assert [c.title for c in service.list()] == ["from thread"]
     db.close()
+
+
+def test_real_upgrade_from_schema_1_to_2(tmp_path):
+    """A Stage 1 database (schema 1) is backed up and upgraded; tool history gains new columns."""
+    path = tmp_path / "green.db"
+    v1 = initialize_database(path, tmp_path / "b", MIGRATIONS[:1])
+    v1.database.execute(
+        "INSERT INTO audit_log (timestamp, tool_name, category, decision, outcome, detail) "
+        "VALUES ('2026-01-01T00:00:00+00:00', 'get_datetime', 'read', 'allowed', 'ok', '')"
+    )
+    v1.database.close()
+    upgraded = initialize_database(path, tmp_path / "b")
+    assert upgraded.schema_version == 2 and upgraded.backup_path.exists()
+    from green.services.permission_service import AuditLog
+
+    entry = AuditLog(upgraded.database).recent()[0]
+    assert entry.tool_name == "get_datetime" and entry.summary == "" and entry.duration_ms == 0
+    upgraded.database.close()

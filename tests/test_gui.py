@@ -106,13 +106,14 @@ def test_tool_confirmation_dialog_bridge(qtbot, window, fake_ollama, services, t
         setattr(c.tools, "output_directory", str(tmp_path)),
     ))
     asked = []
-    window.controller.confirm_handler = lambda request: asked.append(request) or True
+    window.controller.confirm_handler = lambda request, respond: (asked.append(request), respond(True))[1]
     fake_ollama.chat_script = [tool_call_chunks("create_text_file", {"filename": "todo.txt", "content": "milk\n"}), text_chunks("Created.")]
     result = send(qtbot, window, "make a todo file")
     assert result.status == "complete" and asked
     assert asked[0].target.endswith("todo.txt")
     assert (tmp_path / "todo.txt").read_text() == "milk\n"
-    assert "create_text_file" in message_widgets(window)[-1].meta.text()
+    steps = [label.text() for label in message_widgets(window)[-1]._steps.values()]
+    assert any(text.startswith("✓  Creating file") for text in steps)
 
 
 def test_conversation_reload_and_delete(qtbot, window, fake_ollama, services):

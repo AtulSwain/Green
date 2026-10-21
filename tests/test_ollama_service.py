@@ -136,3 +136,15 @@ def test_helpers():
     assert strip_thinking("Answer <think>unfinished") == "Answer "
     assert model_names_match("llama3", "llama3:latest")
     assert not model_names_match("qwen3:8b", "qwen3:4b")
+
+
+def test_model_capabilities(fake_ollama):
+    service = make_service(fake_ollama.url)
+    assert service.model_capabilities() == ["completion", "tools"]
+    assert service.status().supports_tools is True
+    fake_ollama.capabilities = ["completion"]
+    assert service.status().supports_tools is False
+    fake_ollama.capabilities = None
+    assert service.model_capabilities() is None and service.status().supports_tools is None
+    with pytest.raises(ModelNotInstalledError):
+        service.model_capabilities("missing:1b")

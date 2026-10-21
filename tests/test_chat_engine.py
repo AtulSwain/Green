@@ -31,11 +31,14 @@ def test_tool_call_round_trip(services, fake_ollama):
     conv = start_conversation(services, "What day is it?")
     result = services.engine.generate(conv, CancelToken())
     assert result.status == "complete" and result.text == "It is Tuesday."
-    assert result.tools_used == [{"tool": "get_datetime", "ok": True, "decision": "allowed"}]
+    record = result.tools_used[0]
+    assert (record["tool"], record["ok"], record["decision"]) == ("get_datetime", True, "allowed")
+    assert record["description"] == "Checking the current date and time"
     second = fake_ollama.requests[-1]["body"]["messages"]
     tool_msg = second[-1]
     assert tool_msg["role"] == "tool" and json.loads(tool_msg["content"])["ok"] is True
-    assert {t["function"]["name"] for t in fake_ollama.requests[0]["body"]["tools"]} == {"get_datetime", "get_app_info"}
+    chat_requests = [r for r in fake_ollama.requests if r["path"] == "/api/chat"]
+    assert {t["function"]["name"] for t in chat_requests[0]["body"]["tools"]} == {"get_datetime", "get_app_info", "get_system_info"}
 
 
 def test_malformed_tool_calls_do_not_crash(services, fake_ollama):
@@ -55,16 +58,18 @@ def test_malformed_tool_calls_do_not_crash(services, fake_ollama):
     decisions = [t["decision"] for t in result.tools_used]
     assert "denied" in decisions and "rejected" in decisions
     tool_messages = [m for m in fake_ollama.requests[-1]["body"]["messages"] if m["role"] == "tool"]
+    assert {json.loads(m["content"])["error"]["code"] for m in tool_messages} >= {"unknown_tool", "permission_denied", "invalid_arguments"}
     assert len(tool_messages) == 5
 
 
 def test_tool_step_limit(services, fake_ollama):
     services.config_store.update(lambda c: setattr(c.context, "max_tool_rounds", 1))
-    fake_ollama.chat_script = [tool_call_chunks("get_datetime", {}), tool_call_chunks("get_datetime", {})]
+    fake_ollama.chat_script = [tool_call_chunks("get_datetime", {}), text_chunks("It is Monday.")]
     conv = start_conversation(services, "loop forever")
     result = services.engine.generate(conv, CancelToken())
-    assert result.status == "complete" and "step limit" in result.text
-    assert len(fake_ollama.requests) == 2
+    assert result.status == "complete" and result.text.startswith("It is Monday.") and "limit" in result.text
+    chats = [r["body"] for r in fake_ollama.requests if r["path"] == "/api/chat"]
+    assert len(chats) == 2 and "tools" not in chats[1]  # final turn gets no tools
 
 
 def test_write_tool_uses_confirmation_callback(services, fake_ollama, tmp_path):

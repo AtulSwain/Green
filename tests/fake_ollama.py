@@ -34,6 +34,8 @@ class FakeOllama:
         #   list of chunk dicts | ("error", status, message) | ("hang", seconds) | ("slow", chunks, delay)
         self.chat_script: list[Any] = []
         self.requests: list[dict[str, Any]] = []
+        # Reported by /api/show. None omits the field, like Ollama versions before capabilities existed.
+        self.capabilities: list[str] | None = ["completion", "tools"]
         self.pull_chunks: list[dict[str, Any]] = [
             {"status": "pulling manifest"},
             {"status": "downloading", "total": 100, "completed": 50},
@@ -86,6 +88,15 @@ class FakeOllama:
                 length = int(self.headers.get("Content-Length") or 0)
                 body = json.loads(self.rfile.read(length) or b"{}")
                 fake.requests.append({"path": self.path, "body": body})
+                if self.path == "/api/show":
+                    if body.get("model") not in fake.models:
+                        self._json(404, {"error": f"model '{body.get('model')}' not found"})
+                        return
+                    payload = {"modelfile": "", "details": {"family": "qwen3"}}
+                    if fake.capabilities is not None:
+                        payload["capabilities"] = fake.capabilities
+                    self._json(200, payload)
+                    return
                 if self.path == "/api/pull":
                     self._stream(fake.pull_chunks)
                     return

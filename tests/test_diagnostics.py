@@ -22,3 +22,9 @@ def test_report_with_ollama_down(services_factory, closed_port_url):
     assert items["Ollama reachable"].ok is False
     assert "Model installed" not in items
     assert items["Voice"].value == "disabled in Settings"
+
+
+def test_report_flags_model_without_tools(services, fake_ollama):
+    fake_ollama.capabilities = ["completion"]
+    item = _items(build_report(services))["Tool calling"]
+    assert item.ok is False and "NOT supported" in item.value

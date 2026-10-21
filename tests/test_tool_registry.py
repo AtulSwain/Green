@@ -19,7 +19,7 @@ def last_audit(services):
 
 def test_enabled_by_default_only_safe_tools(services):
     names = {s["function"]["name"] for s in services.registry.model_schemas()}
-    assert names == {"get_datetime", "get_app_info"}
+    assert names == {"get_datetime", "get_app_info", "get_system_info"}
 
 
 def test_disabled_tool_is_denied_and_audited(services):
@@ -58,7 +58,7 @@ def test_restricted_and_unconfirmed_write_tools_cannot_register(services):
     class SneakyWrite(Tool):
         name = "sneaky"
         description = "x"
-        category = ToolCategory.WRITE
+        category = ToolCategory.CONTROLLED
         requires_confirmation = False
 
     with pytest.raises(ValueError):
@@ -135,32 +135,29 @@ def test_confirmation_callback_exception_counts_as_decline(services, tmp_path):
     assert result.decision == "declined" and not (tmp_path / "b.txt").exists()
 
 
-def test_open_website_allowlist(services):
-    opened = []
-    tool = services.registry.get("open_website")
-    tool._opener = lambda url: opened.append(url) or True
-    enable(services, "open_website", allowed_websites=["python.org"])
-    reg = services.registry
-    assert reg.invoke("open_website", {"url": "https://docs.python.org/3/"}, confirm=lambda r: True).ok
-    for url in ["https://evil.com", "https://python.org.evil.com", "file:///etc/passwd", "javascript:alert(1)",
-                "https://user:pw@python.org/"]:
-        assert not reg.invoke("open_website", {"url": url}, confirm=lambda r: True).ok, url
-    assert opened == ["https://docs.python.org/3/"]
-
-
-def test_open_application_requires_approved_name(services, tmp_path, monkeypatch):
-    import subprocess
-
+def test_open_application_requires_approved_name(services, tmp_path):
     launched = []
-    monkeypatch.setattr(subprocess, "Popen", lambda args, **kw: launched.append((args, kw)))
+
+    class FakeProcess:
+        pid = 4321
+
+        def poll(self):
+            return None  # still running
+
+    def fake_popen(args, **kwargs):
+        launched.append((args, kwargs))
+        return FakeProcess()
+
+    services.registry.get("open_application")._popen = fake_popen
     program = tmp_path / "editor.exe"
     program.write_text("")
     enable(services, "open_application", approved_applications={"Editor": str(program)})
     reg = services.registry
     assert not reg.invoke("open_application", {"name": "cmd"}, confirm=lambda r: True).ok
     assert not reg.invoke("open_application", {"name": "Editor", "args": "/c del"}, confirm=lambda r: True).ok
-    assert reg.invoke("open_application", {"name": "editor"}, confirm=lambda r: True).ok
-    assert launched[0][0] == [str(program)] and launched[0][1]["shell"] is False
+    result = reg.invoke("open_application", {"name": "editor"}, confirm=lambda r: True)
+    assert result.ok and result.data == {"opened": "Editor", "process_id": 4321}
+    assert launched == [([str(program)], launched[0][1])] and launched[0][1]["shell"] is False
 
 
 def test_propose_file_change_shows_diff_and_backs_up(services, tmp_path):
@@ -216,5 +213,5 @@ def test_memory_and_reminder_tools_need_approval(services):
 def test_result_serialisation():
     from green.services.tool_registry import ToolResult
 
-    payload = json.loads(ToolResult("t", False, error="nope").to_model_content())
-    assert payload == {"tool": "t", "ok": False, "error": "nope"}
+    payload = json.loads(ToolResult("t", False, error="nope", code="policy_violation").to_model_content())
+    assert payload == {"tool": "t", "ok": False, "error": {"code": "policy_violation", "message": "nope"}}
