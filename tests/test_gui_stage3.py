@@ -264,3 +264,16 @@ def test_voice_screen_controls_save(qtbot, window, services):
 
 def test_window_has_icon(window):
     assert not window.windowIcon().isNull()
+
+
+def test_settings_number_fields_are_readable(qtbot, window):
+    """Regression: hidden spin-box buttons once collapsed the value text to 1 px."""
+    from PySide6.QtWidgets import QAbstractSpinBox
+
+    window.show_page("settings")
+    qtbot.wait(50)
+    boxes = window.settings_view.findChildren(QAbstractSpinBox)
+    assert boxes
+    for box in boxes:
+        assert box.lineEdit().width() > 40, box.objectName() or box.text()
+        assert box.lineEdit().text()
