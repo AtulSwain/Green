@@ -1,0 +1,36 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Set up GREEN (create .venv and install packages)",
+      "type": "shell",
+      "windows": {
+        "command": "py -m venv .venv; .\\.venv\\Scripts\\python.exe -m pip install -r requirements.txt -r requirements-dev.txt"
+      },
+      "command": "python3 -m venv .venv && ./.venv/bin/python -m pip install -r requirements.txt -r requirements-dev.txt",
+      "problemMatcher": []
+    },
+    {
+      "label": "Install voice packages",
+      "type": "shell",
+      "windows": { "command": ".\\.venv\\Scripts\\python.exe -m pip install -r requirements-voice.txt" },
+      "command": "./.venv/bin/python -m pip install -r requirements-voice.txt",
+      "problemMatcher": []
+    },
+    {
+      "label": "Run GREEN",
+      "type": "shell",
+      "windows": { "command": ".\\.venv\\Scripts\\python.exe main.py" },
+      "command": "./.venv/bin/python main.py",
+      "problemMatcher": []
+    },
+    {
+      "label": "Run tests",
+      "type": "shell",
+      "windows": { "command": "$env:QT_QPA_PLATFORM='offscreen'; .\\.venv\\Scripts\\python.exe -m pytest -q" },
+      "command": "QT_QPA_PLATFORM=offscreen ./.venv/bin/python -m pytest -q",
+      "group": { "kind": "test", "isDefault": true },
+      "problemMatcher": []
+    }
+  ]
+}

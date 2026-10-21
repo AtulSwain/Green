@@ -17,7 +17,11 @@ venv/
 .green-home/
 
 # Editors / OS
-.vscode/
+.vscode/*
+!.vscode/launch.json
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/extensions.json
 .idea/
 Thumbs.db
 .DS_Store
