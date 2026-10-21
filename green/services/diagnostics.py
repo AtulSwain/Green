@@ -68,6 +68,11 @@ def build_report(services) -> DiagnosticsReport:
     if status.reachable:
         report.add("Model installed", "yes" if status.model_installed else f"no — run: ollama pull {status.model}",
                    status.model_installed)
+        if status.model_installed:
+            tool_text = {True: "supported (reported by Ollama)",
+                         False: "NOT supported — tools are disabled for this model; choose e.g. qwen3:8b",
+                         None: "unknown (this Ollama version does not report model capabilities)"}[status.supports_tools]
+            report.add("Tool calling", tool_text, status.supports_tools)
         names = ", ".join(m.name for m in status.installed_models) or "(none)"
         report.add("Installed models", names)
         try:

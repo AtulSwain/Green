@@ -116,12 +116,14 @@ class VoiceSettings(_Section):
 class ToolSettings(_Section):
     # Deny by default: only side-effect-free status tools start enabled.
     enabled_tools: dict[str, bool] = Field(
-        default_factory=lambda: {"get_datetime": True, "get_app_info": True}
+        default_factory=lambda: {"get_datetime": True, "get_app_info": True, "get_system_info": True}
     )
     approved_directories: list[str] = Field(default_factory=list)
     output_directory: str = ""
     approved_applications: dict[str, str] = Field(default_factory=dict)
     allowed_websites: list[str] = Field(default_factory=list)
+    # When true, open_website may open sites that are not on the allow-list after the user confirms.
+    confirm_unlisted_websites: bool = True
     max_read_bytes: int = Field(200_000, ge=1_000, le=5_000_000)
     max_results: int = Field(200, ge=1, le=2_000)
 

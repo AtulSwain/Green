@@ -94,3 +94,10 @@ class AuditEntry:
     decision: str
     outcome: str
     detail: str
+    summary: str = ""
+    conversation_id: str | None = None
+    duration_ms: int = 0
+
+    @property
+    def succeeded(self) -> bool:
+        return self.outcome == "ok"

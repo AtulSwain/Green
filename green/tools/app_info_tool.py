@@ -16,6 +16,9 @@ class GetAppInfoTool(Tool):
     def __init__(self, context: ToolContext):
         self.context = context
 
+    def describe(self, args, prepared):
+        return "Reading GREEN's settings summary"
+
     def run(self, args, prepared):
         config = self.context.config()
         return {
@@ -29,3 +32,6 @@ class GetAppInfoTool(Tool):
             "allowed_websites": config.tools.allowed_websites,
             "enabled_tools": sorted(n for n, on in config.tools.enabled_tools.items() if on),
         }
+
+    def summarize(self, data):
+        return "Returned the settings summary"

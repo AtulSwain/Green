@@ -93,6 +93,16 @@ MIGRATIONS: tuple[Migration, ...] = (
             """,
         ),
     ),
+    Migration(
+        2,
+        "tool history: result summary, conversation and duration",
+        (
+            "ALTER TABLE audit_log ADD COLUMN summary TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE audit_log ADD COLUMN conversation_id TEXT",
+            "ALTER TABLE audit_log ADD COLUMN duration_ms INTEGER NOT NULL DEFAULT 0",
+            "CREATE INDEX idx_audit_log_timestamp ON audit_log(timestamp)",
+        ),
+    ),
 )
 
 

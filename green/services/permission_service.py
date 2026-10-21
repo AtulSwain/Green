@@ -38,24 +38,49 @@ class AuditLog:
     def __init__(self, db: Database):
         self.db = db
 
-    def record(self, tool_name: str, category: str, decision: str, outcome: str, detail: str = "") -> None:
+    def record(
+        self,
+        tool_name: str,
+        category: str,
+        decision: str,
+        outcome: str,
+        detail: str = "",
+        *,
+        summary: str = "",
+        conversation_id: str | None = None,
+        duration_ms: int = 0,
+    ) -> None:
         detail = redact(" ".join(str(detail).split()))[:MAX_DETAIL]
+        summary = redact(" ".join(str(summary).split()))[:MAX_DETAIL]
         tool_name = redact(str(tool_name))[:80]
         try:
             self.db.execute(
-                "INSERT INTO audit_log (timestamp, tool_name, category, decision, outcome, detail) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (to_iso(utc_now()), tool_name, category, decision, outcome, detail),
+                "INSERT INTO audit_log (timestamp, tool_name, category, decision, outcome, detail, summary, "
+                "conversation_id, duration_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (to_iso(utc_now()), tool_name, category, decision, outcome, detail, summary, conversation_id,
+                 int(duration_ms)),
             )
         except Exception:  # auditing must never break the conversation
             log.exception("Failed to write audit record")
         log.info("Tool %s: decision=%s outcome=%s", tool_name, decision, outcome)
 
-    def recent(self, limit: int = 200) -> list[AuditEntry]:
-        rows = self.db.query_all("SELECT * FROM audit_log ORDER BY id DESC LIMIT ?", (int(limit),))
+    def recent(self, limit: int = 200, *, failures_only: bool = False, tool_name: str | None = None) -> list[AuditEntry]:
+        clauses, params = [], []
+        if failures_only:
+            clauses.append("outcome != 'ok'")
+        if tool_name:
+            clauses.append("tool_name = ?")
+            params.append(tool_name)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = self.db.query_all(f"SELECT * FROM audit_log {where} ORDER BY id DESC LIMIT ?", (*params, int(limit)))
         return [
             AuditEntry(
-                r["id"], from_iso(r["timestamp"]), r["tool_name"], r["category"], r["decision"], r["outcome"], r["detail"]
+                r["id"], from_iso(r["timestamp"]), r["tool_name"], r["category"], r["decision"], r["outcome"],
+                r["detail"], r["summary"], r["conversation_id"], r["duration_ms"],
             )
             for r in rows
         ]
+
+    def clear(self) -> int:
+        with self.db.transaction() as conn:
+            return conn.execute("DELETE FROM audit_log").rowcount

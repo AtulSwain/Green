@@ -122,6 +122,7 @@ class OllamaStatus:
     model_installed: bool = False
     installed_models: list[ModelInfo] = field(default_factory=list)
     error: str = ""
+    supports_tools: bool | None = None  # None = Ollama did not report model capabilities
 
     @property
     def ready(self) -> bool:
@@ -246,6 +247,18 @@ class OllamaService:
             raise OllamaResponseError("Ollama returned an unexpected response.")
         return data
 
+    def _post_json(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
+        conn, response = self._open("POST", path, body, timeout=self.settings.connect_timeout_seconds + 10)
+        try:
+            data = json.loads(response.read().decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise OllamaResponseError("Ollama returned an unreadable response.") from exc
+        finally:
+            conn.close()
+        if not isinstance(data, dict):
+            raise OllamaResponseError("Ollama returned an unexpected response.")
+        return data
+
     def _stream(
         self, path: str, body: dict[str, Any], cancel: CancelToken, timeout: float
     ) -> Iterator[dict[str, Any]]:
@@ -320,6 +333,18 @@ class OllamaService:
                 )
         return result
 
+    def model_capabilities(self, model: str | None = None) -> list[str] | None:
+        """Capabilities Ollama reports for a model (e.g. ["completion", "tools"]).
+
+        Returns None when this Ollama version does not report capabilities.
+        Raises ModelNotInstalledError if the model is unknown to Ollama.
+        """
+        data = self._post_json("/api/show", {"model": model or self.settings.model})
+        capabilities = data.get("capabilities")
+        if not isinstance(capabilities, list):
+            return None
+        return [str(c) for c in capabilities]
+
     def status(self) -> OllamaStatus:
         settings = self.settings
         status = OllamaStatus(False, settings.base_url, settings.model, settings.is_local)
@@ -333,6 +358,12 @@ class OllamaService:
         status.model_installed = any(model_names_match(settings.model, m.name) for m in status.installed_models)
         if not status.model_installed:
             status.error = str(ModelNotInstalledError(settings.model))
+            return status
+        try:
+            capabilities = self.model_capabilities(settings.model)
+            status.supports_tools = None if capabilities is None else "tools" in capabilities
+        except OllamaError:
+            status.supports_tools = None
         return status
 
     def chat_stream(

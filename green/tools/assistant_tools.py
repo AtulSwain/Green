@@ -23,7 +23,7 @@ class SaveMemoryTool(Tool):
         "Propose saving information to long-term memory. Use only when the user asks you to remember "
         "something. The user must approve it before anything is saved."
     )
-    category = ToolCategory.WRITE
+    category = ToolCategory.CONTROLLED
     Args = SaveMemoryArgs
     requires_confirmation = True
 
@@ -37,6 +37,12 @@ class SaveMemoryTool(Tool):
             f"GREEN wants to remember this ({MemoryCategory(args.category).label.lower()}):",
             details=args.content,
         )
+
+    def describe(self, args, prepared):
+        return f"Saving a memory ({MemoryCategory(args.category).label.lower()})"
+
+    def summarize(self, data):
+        return "Memory saved"
 
     def audit_detail(self, args, prepared):
         return f"category={args.category}"
@@ -60,7 +66,7 @@ class CreateReminderTool(Tool):
         "Create a reminder shown by GREEN at the given local time while GREEN is running. "
         "Call get_datetime first if you need the current date."
     )
-    category = ToolCategory.WRITE
+    category = ToolCategory.CONTROLLED
     Args = CreateReminderArgs
     requires_confirmation = True
 
@@ -79,6 +85,12 @@ class CreateReminderTool(Tool):
     def confirmation(self, args, prepared):
         when = prepared.astimezone().strftime("%a %d %b %Y, %H:%M")
         return ConfirmationRequest(self.name, "Create reminder?", f"“{args.title}” at {when}", details=args.notes)
+
+    def describe(self, args, prepared):
+        return f"Creating a reminder for {prepared.astimezone():%a %d %b %H:%M}"
+
+    def summarize(self, data):
+        return f"Reminder created for {data['due']}"
 
     def audit_detail(self, args, prepared):
         return f"due={prepared.isoformat(timespec='minutes')}"

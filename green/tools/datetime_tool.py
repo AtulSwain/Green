@@ -10,6 +10,9 @@ class GetDateTimeTool(Tool):
     description = "Get the current local date, time, weekday and time zone of the user's computer."
     category = ToolCategory.READ
 
+    def describe(self, args, prepared):
+        return "Checking the current date and time"
+
     def run(self, args, prepared):
         now = datetime.now().astimezone()
         return {
@@ -18,3 +21,6 @@ class GetDateTimeTool(Tool):
             "timezone": now.tzname(),
             "utc_offset": now.strftime("%z"),
         }
+
+    def summarize(self, data):
+        return f"{data['weekday']} {data['local_datetime']}"

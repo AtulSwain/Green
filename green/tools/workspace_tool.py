@@ -36,8 +36,14 @@ class WorkspaceListFilesTool(_WorkspaceTool):
         policy = self.policy()
         return policy, policy.resolve(args.subdirectory or ".")
 
+    def describe(self, args, prepared):
+        return "Listing project files"
+
     def audit_detail(self, args, prepared):
         return f"path={prepared[1]}"
+
+    def summarize(self, data):
+        return f"{len(data['files'])} files" + (" (limit reached)" if data["truncated"] else "")
 
     def run(self, args, prepared):
         policy, start = prepared
@@ -64,8 +70,14 @@ class WorkspaceReadFileTool(_WorkspaceTool):
     def prepare(self, args):
         return self.policy().resolve(args.path)
 
+    def describe(self, args, prepared):
+        return f"Reading project file {args.path}"
+
     def audit_detail(self, args, prepared):
         return f"path={prepared}"
+
+    def summarize(self, data):
+        return f"Read {len(data['content']):,} characters" + (" (truncated)" if data["truncated"] else "")
 
     def run(self, args, prepared):
         content = file_access.read_text(prepared, self.context.config().tools.max_read_bytes)
@@ -86,8 +98,14 @@ class WorkspaceSearchTextTool(_WorkspaceTool):
         policy = self.policy()
         return policy, policy.resolve(".")
 
+    def describe(self, args, prepared):
+        return "Searching the project for text"
+
     def audit_detail(self, args, prepared):
         return f"query_length={len(args.query)}"
+
+    def summarize(self, data):
+        return f"{len(data['matches'])} matches" + (" (limit reached)" if data["truncated"] else "")
 
     def run(self, args, prepared):
         policy, root = prepared
@@ -115,7 +133,7 @@ class ProposeFileChangeTool(_WorkspaceTool):
         "Propose a change to a file in the project workspace by giving its complete new content. "
         "The user reviews a diff and decides whether to apply it; a backup of the old file is kept."
     )
-    category = ToolCategory.WRITE
+    category = ToolCategory.CONTROLLED
     Args = ProposeFileChangeArgs
     requires_confirmation = True
 
@@ -127,6 +145,12 @@ class ProposeFileChangeTool(_WorkspaceTool):
             old = file_access.read_text(target, file_access.MAX_WRITE_BYTES).text
         diff = file_access.unified_diff(old, args.new_content, args.path)
         return target, diff, target.exists()
+
+    def describe(self, args, prepared):
+        return f"Proposing a change to {args.path}"
+
+    def summarize(self, data):
+        return f"Applied change to {data['applied']}" + ("; backup kept" if data.get("backup") else "")
 
     def confirmation(self, args, prepared):
         target, diff, exists = prepared

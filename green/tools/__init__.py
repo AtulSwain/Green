@@ -9,6 +9,7 @@ from .assistant_tools import CreateReminderTool, SaveMemoryTool
 from .browser_tool import OpenWebsiteTool
 from .context import ToolContext
 from .datetime_tool import GetDateTimeTool
+from .system_info_tool import GetSystemInfoTool
 from .filesystem_tool import CreateTextFileTool, ListDirectoryTool, ReadTextFileTool, SearchFilesTool
 from .workspace_tool import (
     ProposeFileChangeTool,
@@ -21,6 +22,7 @@ from .workspace_tool import (
 def register_default_tools(registry: ToolRegistry, context: ToolContext) -> ToolRegistry:
     registry.register(GetDateTimeTool())
     registry.register(GetAppInfoTool(context))
+    registry.register(GetSystemInfoTool(context))
     registry.register(ListDirectoryTool(context))
     registry.register(SearchFilesTool(context))
     registry.register(ReadTextFileTool(context))

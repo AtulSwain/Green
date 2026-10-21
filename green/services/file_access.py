@@ -46,9 +46,12 @@ def read_text(path: Path, max_bytes: int) -> TextContent:
         raise FileAccessError("Not a file.")
     if not is_supported_text(path):
         raise FileAccessError(f"Unsupported file type '{path.suffix or path.name}'. Only text and source files can be read.")
-    size = path.stat().st_size
-    with path.open("rb") as handle:
-        raw = handle.read(max_bytes + 1)
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as handle:
+            raw = handle.read(max_bytes + 1)  # never more than the limit is loaded
+    except PermissionError as exc:
+        raise FileAccessError("Access to this file was denied by the operating system.") from exc
     truncated = len(raw) > max_bytes
     raw = raw[:max_bytes]
     if b"\x00" in raw[:8192]:
@@ -69,7 +72,13 @@ def list_directory(policy: PathPolicy, directory: Path, limit: int) -> tuple[lis
         raise FileAccessError("Not a directory.")
     entries: list[DirEntry] = []
     truncated = False
-    with os.scandir(directory) as it:
+    try:
+        scanner = os.scandir(directory)
+    except PermissionError as exc:
+        raise FileAccessError("Access to this folder was denied by the operating system.") from exc
+    except FileNotFoundError as exc:
+        raise FileAccessError("The folder does not exist.") from exc
+    with scanner as it:
         for entry in sorted(it, key=lambda e: (not e.is_dir(follow_symlinks=False), e.name.lower())):
             path = Path(entry.path)
             if not policy.contains(path):

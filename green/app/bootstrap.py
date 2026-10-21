@@ -75,8 +75,9 @@ def build_services(paths: AppPaths | None = None, *, configure_logs: bool = True
     context = ToolContext(
         config=store.get, memory=memory, reminders=reminders, file_backup_dir=paths.file_backup_dir
     )
-    register_default_tools(registry, context)
     ollama = OllamaService(lambda: store.get().ollama)
+    context.ollama = ollama
+    register_default_tools(registry, context)
     engine = ChatEngine(ollama, conversations, memory, registry, store.get)
     voice_in = VoiceInputService(lambda: store.get().voice)
     voice_out = VoiceOutputService(lambda: store.get().voice)

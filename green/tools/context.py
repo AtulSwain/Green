@@ -5,11 +5,15 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from ..config import AppConfig
 from ..security.path_policy import PathPolicy
 from ..services.memory_service import MemoryService
 from ..services.reminder_service import ReminderService
+
+if TYPE_CHECKING:
+    from ..services.ollama_service import OllamaService
 
 
 @dataclass
@@ -19,6 +23,7 @@ class ToolContext:
     reminders: ReminderService
     file_backup_dir: Path
     current_conversation: Callable[[], str | None] = lambda: None
+    ollama: OllamaService | None = None
 
     def approved_policy(self) -> PathPolicy:
         return PathPolicy(self.config().tools.approved_directories)
