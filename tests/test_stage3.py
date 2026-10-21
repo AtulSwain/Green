@@ -123,7 +123,9 @@ def test_keep_alive_default_keeps_model_loaded():
 
 # -- voice auto-stop ------------------------------------------------------------------------------
 
-np = pytest.importorskip("numpy")
+@pytest.fixture
+def np():
+    return pytest.importorskip("numpy")
 
 
 class _Stream:
@@ -149,7 +151,7 @@ class _SD:
         return {"name": "Fake mic"}
 
 
-def _block(level: float, seconds: float = 0.25):
+def _block(np, level: float, seconds: float = 0.25):
     frames = int(16_000 * seconds)
     return np.full((frames, 1), level, dtype="float32"), frames
 
@@ -163,32 +165,32 @@ def _voice(**settings):
     return VoiceInputService(lambda: voice_settings, sd_module=sd), sd
 
 
-def test_auto_stop_after_speech_then_silence():
+def test_auto_stop_after_speech_then_silence(np):
     service, sd = _voice(silence_seconds=1.0)
     service.start_recording()
     feed = sd.stream.callback
     for _ in range(4):
-        feed(*_block(0.0), None, None)
+        feed(*_block(np, 0.0), None, None)
     assert not service.should_auto_stop()  # silence before speaking does not count
-    feed(*_block(0.3), None, None)
+    feed(*_block(np, 0.3), None, None)
     assert service.level > 0.5
     for _ in range(3):
-        feed(*_block(0.001), None, None)
+        feed(*_block(np, 0.001), None, None)
     assert not service.should_auto_stop()
-    feed(*_block(0.001), None, None)
+    feed(*_block(np, 0.001), None, None)
     assert service.should_auto_stop()
     audio = service.stop_recording()
     assert len(audio) == 16_000 * 0.25 * 9 and service.level == 0.0 and not service.should_auto_stop()
 
 
-def test_auto_stop_can_be_disabled_but_time_limit_applies():
+def test_auto_stop_can_be_disabled_but_time_limit_applies(np):
     service, sd = _voice(auto_stop_on_silence=False, max_recording_seconds=1)
     service.start_recording()
-    sd.stream.callback(*_block(0.3), None, None)
+    sd.stream.callback(*_block(np, 0.3), None, None)
     for _ in range(2):
-        sd.stream.callback(*_block(0.0), None, None)
+        sd.stream.callback(*_block(np, 0.0), None, None)
     assert not service.should_auto_stop()
-    sd.stream.callback(*_block(0.0), None, None)
+    sd.stream.callback(*_block(np, 0.0), None, None)
     assert service.should_auto_stop()  # reached max_recording_seconds
 
 

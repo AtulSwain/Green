@@ -13,7 +13,21 @@ from green.ui.speech import SpeechOutput
 from .fake_ollama import text_chunks
 from .test_gui import message_widgets, send
 
-np = pytest.importorskip("numpy")
+
+@pytest.fixture
+def np():
+    return pytest.importorskip("numpy")
+
+
+def _mock_tts_available() -> bool:
+    try:
+        from PySide6.QtTextToSpeech import QTextToSpeech
+    except ImportError:
+        return False
+    return "mock" in QTextToSpeech.availableEngines()
+
+
+needs_mock_tts = pytest.mark.skipif(not _mock_tts_available(), reason="Qt's mock speech engine is not in this PySide6 build")
 
 
 @pytest.fixture
@@ -27,6 +41,7 @@ def window(qtbot, services):
 
 # -- speech output --------------------------------------------------------------------------------
 
+@needs_mock_tts
 def test_system_speech_with_mock_engine(qtbot, services):
     from green.ui.workers import TaskRunner
 
@@ -97,12 +112,12 @@ class FakeWhisper:
         return [SimpleNamespace(text=" What's the time? ")], None
 
 
-def feed(sd, level, seconds=0.25):
+def feed(np, sd, level, seconds=0.25):
     frames = int(16_000 * seconds)
     sd.stream.callback(np.full((frames, 1), level, dtype="float32"), frames, None, None)
 
 
-def test_click_to_talk_conversation(qtbot, window, services, fake_ollama):
+def test_click_to_talk_conversation(qtbot, window, services, fake_ollama, np):
     sd = FakeSD()
     services.voice_input._sd = sd
     services.voice_input._model_factory = FakeWhisper
@@ -117,10 +132,10 @@ def test_click_to_talk_conversation(qtbot, window, services, fake_ollama):
     qtbot.mouseClick(view.mic_button, Qt.MouseButton.LeftButton)
     assert services.voice_input.is_recording and view.level_bar.isVisible()
     assert "Listening" in view.mic_button.text()
-    feed(sd, 0.3)
+    feed(np, sd, 0.3)
     qtbot.waitUntil(lambda: view.level_bar.value() > 50, timeout=2000)
     for _ in range(3):
-        feed(sd, 0.0)  # the user stops talking → recording stops by itself
+        feed(np, sd, 0.0)  # the user stops talking → recording stops by itself
     with qtbot.waitSignal(window.controller.generation_finished, timeout=10000):
         pass
     assert not services.voice_input.is_recording and not view.level_bar.isVisible()
@@ -129,7 +144,7 @@ def test_click_to_talk_conversation(qtbot, window, services, fake_ollama):
     assert spoken == ["It is 3 pm."]  # answered out loud because the question was spoken
 
 
-def test_click_again_stops_recording(qtbot, window, services, fake_ollama):
+def test_click_again_stops_recording(qtbot, window, services, fake_ollama, np):
     sd = FakeSD()
     services.voice_input._sd = sd
     services.voice_input._model_factory = FakeWhisper
@@ -138,7 +153,7 @@ def test_click_again_stops_recording(qtbot, window, services, fake_ollama):
     window.chat_view.apply_config()
     view = window.chat_view
     view.toggle_recording()
-    feed(sd, 0.3, seconds=0.5)
+    feed(np, sd, 0.3, seconds=0.5)
     view.toggle_recording()
     qtbot.waitUntil(lambda: view.input.toPlainText() == "What's the time?", timeout=5000)
     assert not window.controller.is_busy  # without conversation mode the transcript waits for review
@@ -243,7 +258,8 @@ def test_voice_screen_controls_save(qtbot, window, services):
     voice = services.config_store.get().voice
     assert voice.enabled and voice.speak_responses and voice.speech_rate == 0.5
     assert not window.chat_view.mic_button.isHidden()
-    assert view.test_voice.isEnabled()  # mock engine has voices
+    if _mock_tts_available():
+        assert view.test_voice.isEnabled()  # mock engine has voices
 
 
 def test_window_has_icon(window):
