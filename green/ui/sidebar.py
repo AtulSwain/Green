@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QButtonGroup,
     QFrame,
     QInputDialog,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMenu,
@@ -65,6 +66,17 @@ class Sidebar(QFrame):
         label = QLabel("CONVERSATIONS")
         label.setObjectName("SectionLabel")
         layout.addWidget(label)
+        self.search = QLineEdit()
+        self.search.setObjectName("SidebarSearch")
+        self.search.setPlaceholderText("Search conversations…")
+        self.search.setClearButtonEnabled(True)
+        self.search.setToolTip("Searches titles and message text")
+        self._search_timer = QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(250)
+        self._search_timer.timeout.connect(lambda: self.reload())
+        self.search.textChanged.connect(lambda _: self._search_timer.start())
+        layout.addWidget(self.search)
         self.list = QListWidget()
         self.list.setObjectName("ConversationList")
         self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -107,15 +119,13 @@ class Sidebar(QFrame):
         if key in self.nav_buttons:
             self.nav_buttons[key].setChecked(True)
 
-    def set_voice_visible(self, visible: bool) -> None:
-        self.nav_buttons["voice"].setVisible(visible)
-
     def reload(self, select_id: str | None = None) -> None:
         current = select_id if select_id is not None else self.current_id()
         self._suppress = True
         try:
             self.list.clear()
-            for conv in self.conversations.list():
+            query = self.search.text().strip()
+            for conv in (self.conversations.search(query) if query else self.conversations.list()):
                 item = QListWidgetItem(conv.title)
                 item.setData(Qt.ItemDataRole.UserRole, conv.id)
                 item.setToolTip(f"{conv.title}\nUpdated {conv.updated_at.astimezone():%d %b %Y %H:%M}")
@@ -125,6 +135,7 @@ class Sidebar(QFrame):
         finally:
             self._suppress = False
         self.empty_label.setVisible(self.list.count() == 0)
+        self.empty_label.setText("No matching conversations." if self.search.text().strip() else "No conversations yet.")
 
     def current_id(self) -> str | None:
         item = self.list.currentItem()

@@ -174,6 +174,22 @@ QLabel#MessageMeta {{ color: {t.text_muted}; font-size: {font_pt - 1}pt; }}
 QLabel#MessageMeta[state="error"] {{ color: {t.danger}; }}
 QLabel#MessageMeta[state="cancelled"] {{ color: {t.warning}; }}
 
+QPushButton#QuickAction {{ background: {t.surface}; border: 1px solid {t.border}; border-radius: {RADIUS + 2}px;
+    padding: {s['md']}px; text-align: left; color: {t.text}; }}
+QPushButton#QuickAction:hover {{ border-color: {t.accent_fg}; background: {t.surface_alt}; }}
+QFrame#CodeBlock {{ background: {t.code_bg}; border: 1px solid {t.border}; border-radius: {RADIUS}px; }}
+QLabel#CodeLanguage {{ color: {t.text_muted}; font-size: {font_pt - 1}pt; }}
+QLabel#CodeText {{ font-family: {MONO_FAMILY}; background: transparent; }}
+QProgressBar#LevelMeter {{ border: none; border-radius: 4px; background: {t.surface_alt}; height: 8px; }}
+QProgressBar#LevelMeter::chunk {{ background: {t.accent_fg}; border-radius: 4px; }}
+QLineEdit#SidebarSearch {{ background: {t.surface}; }}
+QSlider {{ min-height: 20px; max-height: 20px; background: transparent; }}
+QSlider::groove:horizontal {{ height: 4px; background: {t.border}; border-radius: 2px; margin: 0; }}
+QSlider::sub-page:horizontal {{ height: 4px; background: {t.accent_fg}; border-radius: 2px; }}
+QSlider::add-page:horizontal {{ height: 4px; background: {t.border}; border-radius: 2px; }}
+QSlider::handle:horizontal {{ background: {t.text}; width: 14px; height: 14px; margin: -5px 0; border-radius: 7px; }}
+QSlider::handle:horizontal:hover {{ background: {t.accent_fg}; }}
+
 QLabel#ToolStep {{ color: {t.text_muted}; font-size: {font_pt - 1}pt; padding: 1px 0; }}
 QLabel#ToolStep[state="running"] {{ color: {t.text}; }}
 QLabel#ToolStep[state="waiting"] {{ color: {t.warning}; }}

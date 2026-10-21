@@ -8,7 +8,6 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
-    QFileDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -141,51 +140,14 @@ class SettingsView(QWidget):
         form.addRow("Text size", self.font_size)
         self.send_on_enter = QCheckBox("Enter sends the message (Shift+Enter for a new line)")
         form.addRow("", self.send_on_enter)
+        self.close_to_tray = QCheckBox("Keep GREEN running in the system tray when the window is closed")
+        self.close_to_tray.setToolTip("Reminders keep working. Quit from the tray icon's menu.")
+        form.addRow("", self.close_to_tray)
         layout.addWidget(ui_box)
 
-        # Voice
-        voice_box = QGroupBox("Voice (optional)")
-        form = QFormLayout(voice_box)
-        self.voice_enabled = QCheckBox("Enable voice features (push-to-talk and spoken replies)")
-        form.addRow("", self.voice_enabled)
-        stt_row = QHBoxLayout()
-        self.stt_model = QLineEdit()
-        self.stt_model.setToolTip("A faster-whisper model name (e.g. base.en) or a folder containing a converted model")
-        stt_row.addWidget(self.stt_model, 1)
-        browse_stt = QPushButton("Folder…")
-        browse_stt.clicked.connect(self._browse_stt)
-        stt_row.addWidget(browse_stt)
-        form.addRow("Speech model", stt_row)
-        self.stt_device = QComboBox()
-        for value in ("cpu", "cuda", "auto"):
-            self.stt_device.addItem(value, value)
-        form.addRow("Speech device", self.stt_device)
-        self.stt_compute = QComboBox()
-        for value in ("int8", "int8_float16", "float16", "float32", "default"):
-            self.stt_compute.addItem(value, value)
-        form.addRow("Compute type", self.stt_compute)
-        self.stt_language = QLineEdit()
-        self.stt_language.setMaxLength(8)
-        self.stt_language.setToolTip("Language code such as en; leave empty to auto-detect")
-        form.addRow("Language", self.stt_language)
-        self.allow_download = QCheckBox("Allow a one-time download of the speech model from Hugging Face")
-        self.allow_download.setToolTip("Sizes range from about 75 MB (tiny) to about 3 GB (large). Off by default.")
-        form.addRow("", self.allow_download)
-        piper_row = QHBoxLayout()
-        self.piper_path = QLineEdit()
-        piper_row.addWidget(self.piper_path, 1)
-        browse_piper = QPushButton("Browse…")
-        browse_piper.clicked.connect(self._browse_piper)
-        piper_row.addWidget(browse_piper)
-        form.addRow("Piper voice (.onnx)", piper_row)
-        self.speak_responses = QCheckBox("Read replies aloud")
-        form.addRow("", self.speak_responses)
-        self.auto_submit = QCheckBox("Send transcripts immediately (otherwise you can review them first)")
-        form.addRow("", self.auto_submit)
-        self.max_recording = _spin(1, 300)
-        self.max_recording.setSuffix(" s")
-        form.addRow("Max recording length", self.max_recording)
-        layout.addWidget(voice_box)
+        voice_note = QLabel("Voice settings (talking to GREEN and its spoken answers) are on the Voice screen.")
+        voice_note.setObjectName("Muted")
+        layout.addWidget(voice_note)
 
         # Data
         data_box = QGroupBox("Data and privacy")
@@ -252,17 +214,7 @@ class SettingsView(QWidget):
         self.theme.setCurrentIndex(self.theme.findData(config.ui.theme))
         self.font_size.setValue(config.ui.font_point_size)
         self.send_on_enter.setChecked(config.ui.send_on_enter)
-        v = config.voice
-        self.voice_enabled.setChecked(v.enabled)
-        self.stt_model.setText(v.stt_model)
-        self.stt_device.setCurrentIndex(self.stt_device.findData(v.stt_device))
-        self.stt_compute.setCurrentIndex(self.stt_compute.findData(v.stt_compute_type))
-        self.stt_language.setText(v.stt_language)
-        self.allow_download.setChecked(v.allow_model_download)
-        self.piper_path.setText(v.piper_model_path)
-        self.speak_responses.setChecked(v.speak_responses)
-        self.auto_submit.setChecked(v.auto_submit_transcript)
-        self.max_recording.setValue(v.max_recording_seconds)
+        self.close_to_tray.setChecked(config.ui.close_to_tray)
         self.error_label.setText("")
         self._update_privacy_notice()
 
@@ -286,19 +238,8 @@ class SettingsView(QWidget):
             max_tool_rounds=self.tool_rounds.value(),
         )
         data["ui"].update(
-            theme=self.theme.currentData(), font_point_size=self.font_size.value(), send_on_enter=self.send_on_enter.isChecked()
-        )
-        data["voice"].update(
-            enabled=self.voice_enabled.isChecked(),
-            stt_model=self.stt_model.text().strip(),
-            stt_device=self.stt_device.currentData(),
-            stt_compute_type=self.stt_compute.currentData(),
-            stt_language=self.stt_language.text().strip(),
-            allow_model_download=self.allow_download.isChecked(),
-            piper_model_path=self.piper_path.text().strip(),
-            speak_responses=self.speak_responses.isChecked(),
-            auto_submit_transcript=self.auto_submit.isChecked(),
-            max_recording_seconds=self.max_recording.value(),
+            theme=self.theme.currentData(), font_point_size=self.font_size.value(), send_on_enter=self.send_on_enter.isChecked(),
+            close_to_tray=self.close_to_tray.isChecked(),
         )
         return AppConfig.model_validate(data)
 
@@ -419,13 +360,3 @@ class SettingsView(QWidget):
                 self.model_status.setText("Download failed. Details are in the log.")
 
         self.runner.submit(work, on_done=finished, on_error=failed, on_progress=on_progress)
-
-    def _browse_stt(self) -> None:
-        folder = QFileDialog.getExistingDirectory(self, "Choose a faster-whisper model folder")
-        if folder:
-            self.stt_model.setText(folder)
-
-    def _browse_piper(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Choose a Piper voice", "", "Piper voice (*.onnx)")
-        if path:
-            self.piper_path.setText(path)

@@ -4,13 +4,19 @@ from __future__ import annotations
 
 import logging
 
+from pathlib import Path
+
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QGuiApplication, QKeyEvent
+from PySide6.QtGui import QGuiApplication, QKeyEvent, QTextCursor
 from PySide6.QtWidgets import (
+    QComboBox,
+    QFileDialog,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QPlainTextEdit,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -26,6 +32,8 @@ from ..services.ollama_service import CancelToken, OllamaError
 from ..services.voice_input_service import VoiceError
 from .chat_controller import ChatController
 from .dialogs import MemoryDialog
+from .message_body import MessageBody
+from .speech import SpeechOutput
 from .styles import repolish
 from .workers import TaskRunner
 
@@ -97,13 +105,31 @@ class Banner(QFrame):
         self.show()
 
 
+def format_stats(stats: dict | None) -> str:
+    """'qwen3:4b · 14.2 tok/s · 6.1 s' from measured statistics (empty if none were reported)."""
+    if not stats:
+        return ""
+    parts = [str(stats.get("model", ""))] if stats.get("model") else []
+    if stats.get("tokens_per_second"):
+        parts.append(f"{stats['tokens_per_second']} tok/s")
+    if stats.get("seconds") is not None:
+        parts.append(f"{stats['seconds']} s")
+    if stats.get("load_seconds"):
+        parts.append(f"model load {stats['load_seconds']} s")
+    return " · ".join(parts)
+
+
 class MessageWidget(QFrame):
     remember_requested = Signal(str)
+    speak_requested = Signal(str)
+    regenerate_requested = Signal()
 
-    def __init__(self, role: str, content: str, status: str = "complete", tools: list | None = None):
+    def __init__(self, role: str, content: str, status: str = "complete", tools: list | None = None, *,
+                 message_id: int | None = None, created_at=None, stats: dict | None = None):
         super().__init__()
         self.role = role
         self.raw = content
+        self.message_id = message_id
         self.setObjectName("MessageUser" if role == "user" else "MessageAssistant")
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
         layout = QVBoxLayout(self)
@@ -114,29 +140,24 @@ class MessageWidget(QFrame):
         role_label = QLabel("You" if role == "user" else "GREEN")
         role_label.setObjectName("MessageRole")
         header.addWidget(role_label)
+        self.time_label = QLabel()
+        self.time_label.setObjectName("MessageMeta")
+        header.addWidget(self.time_label)
+        self.set_time(created_at)
         header.addStretch(1)
-        self.copy_button = QPushButton("Copy")
-        self.copy_button.setObjectName("LinkButton")
-        self.copy_button.setToolTip("Copy this message to the clipboard")
-        self.copy_button.clicked.connect(self._copy)
-        header.addWidget(self.copy_button)
-        self.remember_button = QPushButton("Remember…")
-        self.remember_button.setObjectName("LinkButton")
-        self.remember_button.setToolTip("Review and save this text to long-term memory")
-        self.remember_button.clicked.connect(lambda: self.remember_requested.emit(self.raw))
-        header.addWidget(self.remember_button)
+        self.speak_button = self._link("Read aloud", "Read this reply aloud", lambda: self.speak_requested.emit(self.raw))
+        self.copy_button = self._link("Copy", "Copy this message to the clipboard", self._copy)
+        self.remember_button = self._link("Remember…", "Review and save this text to long-term memory",
+                                          lambda: self.remember_requested.emit(self.raw))
+        self.regenerate_button = self._link("Regenerate", "Replace this reply with a new answer",
+                                            self.regenerate_requested.emit)
+        for button in (self.speak_button, self.copy_button, self.remember_button, self.regenerate_button):
+            header.addWidget(button)
+        self.speak_button.setVisible(role == "assistant")
+        self.regenerate_button.setVisible(False)
         layout.addLayout(header)
 
-        self.body = QLabel()
-        self.body.setObjectName("MessageBody")
-        self.body.setWordWrap(True)
-        # Links in model output are not clickable: GREEN never opens URLs without the browser tool.
-        self.body.setOpenExternalLinks(False)
-        self.body.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse | Qt.TextInteractionFlag.TextSelectableByKeyboard
-        )
-        self.body.setTextFormat(Qt.TextFormat.PlainText if role == "user" else Qt.TextFormat.MarkdownText)
-        self.body.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        self.body = MessageBody(markdown=role == "assistant")
         layout.addWidget(self.body)
 
         self.steps_box = QVBoxLayout()
@@ -148,15 +169,37 @@ class MessageWidget(QFrame):
         self.meta.setObjectName("MessageMeta")
         self.meta.setWordWrap(True)
         layout.addWidget(self.meta)
+        self._status_text = ""
+        self._stats_text = format_stats(stats)
         self.set_content(content)
         self.set_status(status, tools or [])
 
+    @staticmethod
+    def _link(text: str, tip: str, slot) -> QPushButton:
+        button = QPushButton(text)
+        button.setObjectName("LinkButton")
+        button.setToolTip(tip)
+        button.clicked.connect(slot)
+        return button
+
+    def set_time(self, created_at) -> None:
+        if created_at is None:
+            self.time_label.setText("")
+            return
+        local = created_at.astimezone()
+        self.time_label.setText(local.strftime("%H:%M"))
+        self.time_label.setToolTip(local.strftime("%A %d %B %Y, %H:%M:%S"))
+
     def set_content(self, text: str) -> None:
         self.raw = text
-        self.body.setText(text if text else "…")
+        self.body.set_text(text)
         has_text = bool(text)
-        self.copy_button.setEnabled(has_text)
-        self.remember_button.setEnabled(has_text)
+        for button in (self.copy_button, self.remember_button, self.speak_button):
+            button.setEnabled(has_text)
+
+    def set_stats(self, stats: dict | None) -> None:
+        self._stats_text = format_stats(stats)
+        self._refresh_meta()
 
     def update_step(self, key, text: str, state: str) -> None:
         """Show or update one tool step. ``state``: running | waiting | ok | failed."""
@@ -175,22 +218,34 @@ class MessageWidget(QFrame):
         repolish(label)
 
     def set_status(self, status: str, tools: list) -> None:
-        parts = []
-        if status in STATUS_LABELS:
-            parts.append(STATUS_LABELS[status])
+        self._status_text = STATUS_LABELS.get(status, "")
         if tools and not self._steps:
             for index, item in enumerate(tools):
                 if isinstance(item, dict):
                     self.update_step(("saved", index), step_text_from_record(item), "ok" if item.get("ok") else "failed")
+        self.meta.setProperty("state", status)
+        self._refresh_meta()
+
+    def _refresh_meta(self) -> None:
+        parts = [p for p in (self._status_text, self._stats_text) if p]
         self.meta.setText(" · ".join(parts))
         self.meta.setVisible(bool(parts))
-        self.meta.setProperty("state", status)
         repolish(self.meta)
 
     def _copy(self) -> None:
         QGuiApplication.clipboard().setText(self.raw)
         self.copy_button.setText("Copied")
-        QTimer.singleShot(1200, lambda: self.copy_button.setText("Copy"))
+        QTimer.singleShot(1200, self.copy_button, lambda: self.copy_button.setText("Copy"))
+
+
+QUICK_ACTIONS = (
+    ("Explain code", "Paste code and get a walkthrough", "Explain what this code does, step by step:\n\n"),
+    ("Write an email", "Draft a clear, friendly message", "Write a short, friendly email to [who] about [what]."),
+    ("Summarize text", "Turn long text into key points", "Summarize the following text in 5 bullet points:\n\n"),
+    ("Plan my day", "Organise tasks into a schedule", "Help me plan my day. My tasks are: "),
+    ("Calculate", "Exact math with the calculator tool", "What is 18% of 2,450 plus 75?"),
+    ("Set a reminder", "GREEN reminds you while it runs", "Remind me in 10 minutes to take a break."),
+)
 
 
 class ComposerEdit(QPlainTextEdit):
@@ -220,21 +275,26 @@ class ComposerEdit(QPlainTextEdit):
 class ChatView(QWidget):
     conversation_created = Signal(str)
     conversation_changed = Signal()  # title/order may have changed
+    model_switched = Signal(str)
 
-    def __init__(self, services: AppServices, controller: ChatController, runner: TaskRunner, theme_provider, parent=None):
+    def __init__(self, services: AppServices, controller: ChatController, runner: TaskRunner, theme_provider,
+                 speech: SpeechOutput, parent=None):
         super().__init__(parent)
         self.setObjectName("Page")
         self.services = services
         self.controller = controller
         self.runner = runner
         self.theme_provider = theme_provider
+        self.speech = speech
         self.conversation_id: str | None = None
         self._load_token = 0
         self._stream_widget: MessageWidget | None = None
         self._stream_text = ""
         self._stream_steps: dict[int, object] = {}
+        self._message_widgets: list[MessageWidget] = []
         self._model_ready = True
-        self._speaking = False
+        self._voice_turn = False
+        self._transcribing = False
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -242,9 +302,19 @@ class ChatView(QWidget):
 
         header = QHBoxLayout()
         header.setContentsMargins(24, 16, 24, 8)
+        header.setSpacing(8)
         self.title = QLabel("New conversation")
         self.title.setObjectName("PageTitle")
         header.addWidget(self.title, 1)
+        self.model_combo = QComboBox()
+        self.model_combo.setToolTip("Model used for new replies. Smaller models (e.g. qwen3:4b) answer faster.")
+        self.model_combo.setMinimumWidth(150)
+        self.model_combo.activated.connect(self._model_selected)
+        header.addWidget(self.model_combo)
+        self.export_button = QPushButton("Export…")
+        self.export_button.setToolTip("Save this conversation as a Markdown file")
+        self.export_button.clicked.connect(self._export)
+        header.addWidget(self.export_button)
         self.summarize_button = QPushButton("Summarize to memory…")
         self.summarize_button.setToolTip("Ask the model for a summary, review it, then save it as a memory")
         self.summarize_button.clicked.connect(self._summarize)
@@ -282,10 +352,20 @@ class ChatView(QWidget):
         self.stack.addWidget(self.loading)
         root.addWidget(self.stack, 1)
 
+        status_row = QHBoxLayout()
+        status_row.setContentsMargins(24, 4, 24, 4)
         self.status_label = QLabel("")
         self.status_label.setObjectName("Muted")
-        self.status_label.setContentsMargins(24, 4, 24, 4)
-        root.addWidget(self.status_label)
+        status_row.addWidget(self.status_label, 1)
+        self.level_bar = QProgressBar()
+        self.level_bar.setObjectName("LevelMeter")
+        self.level_bar.setRange(0, 100)
+        self.level_bar.setTextVisible(False)
+        self.level_bar.setFixedSize(160, 8)
+        self.level_bar.setToolTip("Microphone level")
+        self.level_bar.hide()
+        status_row.addWidget(self.level_bar)
+        root.addLayout(status_row)
 
         composer = QFrame()
         composer.setObjectName("ComposerBar")
@@ -307,18 +387,25 @@ class ChatView(QWidget):
         self.stop_button.setToolTip("Stop generating (Esc)")
         self.stop_button.setShortcut("Esc")
         self.stop_button.clicked.connect(self.controller.stop)
-        self.mic_button = QPushButton("Hold to talk")
+        self.mic_button = QPushButton("Talk")
         self.mic_button.setObjectName("MicButton")
-        self.mic_button.setToolTip("Push-to-talk: hold while speaking, release to transcribe. Audio stays on this computer.")
-        self.mic_button.pressed.connect(self._start_recording)
-        self.mic_button.released.connect(self._stop_recording)
+        self.mic_button.setToolTip(
+            "Click and speak. Recording stops when you pause (or click again); GREEN then answers out loud. "
+            "Audio never leaves this computer. Shortcut: Ctrl+M"
+        )
+        self.mic_button.setShortcut("Ctrl+M")
+        self.mic_button.clicked.connect(self.toggle_recording)
         self.stop_speaking_button = QPushButton("Stop speaking")
-        self.stop_speaking_button.clicked.connect(self._stop_speaking)
+        self.stop_speaking_button.clicked.connect(self.speech.stop)
         for button in (self.send_button, self.stop_button, self.mic_button, self.stop_speaking_button):
             buttons.addWidget(button)
         buttons.addStretch(1)
         row.addLayout(buttons)
         root.addWidget(composer)
+
+        self._voice_timer = QTimer(self)
+        self._voice_timer.setInterval(100)
+        self._voice_timer.timeout.connect(self._poll_recording)
 
         controller.busy_changed.connect(self._on_busy)
         controller.status_changed.connect(self.status_label.setText)
@@ -327,6 +414,8 @@ class ChatView(QWidget):
         controller.generation_finished.connect(self._on_finished)
         controller.generation_failed.connect(self._on_failed)
         controller.tool_event.connect(self._on_tool_event)
+        speech.speaking_changed.connect(lambda _: self._update_controls())
+        speech.failed.connect(lambda message: self.banner.show_message(message, "warning"))
 
         self.apply_config()
         self.show_conversation(None)
@@ -335,22 +424,43 @@ class ChatView(QWidget):
     def _build_empty_state(self) -> QWidget:
         widget = QWidget()
         layout = QVBoxLayout(widget)
+        layout.setContentsMargins(24, 0, 24, 0)
         layout.addStretch(1)
         title = QLabel("How can GREEN help?")
         title.setObjectName("PageTitle")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title)
-        hint = QLabel(
-            "Ask a question, get help with code, or manage your day.\n"
-            "Responses are generated by your local Ollama model; conversations are stored only on this computer.\n"
-            "Enable tools under Tools & Permissions to let GREEN read approved folders or create reminders."
-        )
+        hint = QLabel("Runs on your computer with your local model. Pick a starting point or just type.")
         hint.setObjectName("Muted")
         hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         hint.setWordWrap(True)
         layout.addWidget(hint)
+        layout.addSpacing(16)
+        grid = QGridLayout()
+        grid.setSpacing(10)
+        self.quick_buttons: list[QPushButton] = []
+        for index, (name, subtitle, prompt) in enumerate(QUICK_ACTIONS):
+            button = QPushButton(f"{name}\n{subtitle}")
+            button.setObjectName("QuickAction")
+            button.setToolTip(prompt.strip())
+            button.setMinimumHeight(64)
+            button.clicked.connect(lambda _=False, p=prompt: self.use_prompt(p))
+            grid.addWidget(button, index // 3, index % 3)
+            self.quick_buttons.append(button)
+        wrapper = QHBoxLayout()
+        wrapper.addStretch(1)
+        wrapper.addLayout(grid, 6)
+        wrapper.addStretch(1)
+        layout.addLayout(wrapper)
         layout.addStretch(2)
         return widget
+
+    def use_prompt(self, prompt: str) -> None:
+        self.input.setPlainText(prompt)
+        cursor = self.input.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        self.input.setTextCursor(cursor)
+        self.input.setFocus()
 
     # -- configuration ----------------------------------------------------------------------
     def apply_config(self) -> None:
@@ -362,7 +472,31 @@ class ChatView(QWidget):
             else "Message GREEN…  (Ctrl+Enter to send)"
         )
         self.mic_button.setVisible(config.voice.enabled)
+        if self.model_combo.findText(config.ollama.model) < 0:
+            self.model_combo.addItem(config.ollama.model)
+        self.model_combo.setCurrentText(config.ollama.model)
         self._update_controls()
+
+    def set_models(self, names: list[str], current: str) -> None:
+        """Fill the model switcher with the models installed in Ollama."""
+        self.model_combo.blockSignals(True)
+        self.model_combo.clear()
+        for name in sorted(set(names) | {current}):
+            self.model_combo.addItem(name)
+        self.model_combo.setCurrentText(current)
+        self.model_combo.blockSignals(False)
+
+    def _model_selected(self, _index: int) -> None:
+        name = self.model_combo.currentText()
+        if not name or name == self.services.config_store.get().ollama.model:
+            return
+        try:
+            self.services.config_store.update(lambda c: setattr(c.ollama, "model", name))
+        except Exception as exc:  # validation or disk error
+            self.banner.show_message(f"Could not switch model: {exc}", "error")
+            return
+        self.status_label.setText(f"Now using {name} for new replies.")
+        self.model_switched.emit(name)
 
     def set_model_ready(self, ready: bool) -> None:
         self._model_ready = ready
@@ -370,12 +504,24 @@ class ChatView(QWidget):
 
     def _update_controls(self) -> None:
         busy = self.controller.is_busy
+        recording = self.services.voice_input.is_recording
         has_text = bool(self.input.toPlainText().strip())
-        self.send_button.setEnabled(not busy and has_text)
+        self.send_button.setEnabled(not busy and has_text and not recording)
         self.stop_button.setVisible(busy)
         self.send_button.setVisible(not busy)
-        self.summarize_button.setEnabled(not busy and self.conversation_id is not None)
-        self.stop_speaking_button.setVisible(self._speaking)
+        has_conversation = self.conversation_id is not None
+        self.summarize_button.setEnabled(not busy and has_conversation)
+        self.export_button.setEnabled(has_conversation and bool(self._message_widgets))
+        self.model_combo.setEnabled(not busy)
+        self.mic_button.setEnabled(not busy and not self._transcribing)
+        self.stop_speaking_button.setVisible(self.speech.is_speaking)
+        self._refresh_regenerate()
+
+    def _refresh_regenerate(self) -> None:
+        busy = self.controller.is_busy
+        for index, widget in enumerate(self._message_widgets):
+            is_last = index == len(self._message_widgets) - 1
+            widget.regenerate_button.setVisible(is_last and widget.role == "assistant" and not busy)
 
     # -- conversations ------------------------------------------------------------------------
     def show_conversation(self, conversation_id: str | None) -> None:
@@ -412,6 +558,7 @@ class ChatView(QWidget):
         self.stack.setCurrentWidget(self.scroll if messages or self._stream_widget else self.empty_state)
         self._stick_to_bottom = True
         self._scroll_to_bottom()
+        self._update_controls()
 
     def _on_load_error(self, token: int, error: Exception) -> None:
         if token != self._load_token:
@@ -429,6 +576,7 @@ class ChatView(QWidget):
 
     def _clear_messages(self) -> None:
         self._stream_widget = None
+        self._message_widgets = []
         while self.messages_layout.count() > 1:
             item = self.messages_layout.takeAt(0)
             if item.widget():
@@ -436,13 +584,20 @@ class ChatView(QWidget):
 
     def _append_widget(self, widget: MessageWidget) -> MessageWidget:
         widget.remember_requested.connect(self._remember)
+        widget.speak_requested.connect(lambda text: self.speech.speak(text, respect_mute=False))
+        widget.regenerate_requested.connect(self.regenerate_last)
         self.messages_layout.insertWidget(self.messages_layout.count() - 1, widget)
         self.stack.setCurrentWidget(self.scroll)
         return widget
 
     def _append_message(self, message: Message) -> MessageWidget:
-        tools = message.metadata.get("tools") if isinstance(message.metadata, dict) else None
-        return self._append_widget(MessageWidget(message.role, message.content, message.status, tools or []))
+        metadata = message.metadata if isinstance(message.metadata, dict) else {}
+        widget = self._append_widget(MessageWidget(
+            message.role, message.content, message.status, metadata.get("tools") or [],
+            message_id=message.id, created_at=message.created_at, stats=metadata.get("stats"),
+        ))
+        self._message_widgets.append(widget)
+        return widget
 
     # -- scrolling --------------------------------------------------------------------------------
     def _track_scroll(self, value: int) -> None:
@@ -468,8 +623,25 @@ class ChatView(QWidget):
             self._load_token += 1  # nothing to load for a brand-new conversation
             self.conversation_created.emit(conv.id)
         self.banner.hide()
+        self.speech.stop()
         if self.controller.send(self.conversation_id, text):
             self.input.clear()
+
+    def regenerate_last(self) -> None:
+        """Replace the last reply with a new one."""
+        conversation_id = self.conversation_id
+        if not conversation_id or self.controller.is_busy:
+            return
+        last_user = self.services.conversations.last_user_message(conversation_id)
+        if last_user is None:
+            return
+        self.services.conversations.delete_messages_after(conversation_id, last_user.id)
+        while self._message_widgets and self._message_widgets[-1].role == "assistant":
+            widget = self._message_widgets.pop()
+            self.messages_layout.removeWidget(widget)
+            widget.deleteLater()
+        self.banner.hide()
+        self.controller.regenerate(conversation_id)
 
     def _on_user_message(self, message: Message) -> None:
         if message.conversation_id != self.conversation_id:
@@ -503,28 +675,37 @@ class ChatView(QWidget):
         self._stream_text = ""
         if widget is not None:
             if result.message is not None:
+                widget.message_id = result.message.id
                 widget.set_content(result.message.content)
                 widget.set_status(result.message.status, result.tools_used)
+                widget.set_time(result.message.created_at)
+                widget.set_stats(result.stats)
+                self._message_widgets.append(widget)
             else:
+                self.messages_layout.removeWidget(widget)
                 widget.deleteLater()
         self._stream_steps = {}
+        voice_turn, self._voice_turn = self._voice_turn, False
         if result.status == "error":
             self._banner_action_kind = "retry"
             if conversation_id == self.conversation_id:
                 self.banner.show_message(result.error, "error", "Retry")
-        elif result.notices and conversation_id == self.conversation_id:
-            self._banner_action_kind = ""
-            self.banner.show_message(" ".join(result.notices), "warning")
-        elif result.status == "complete":
-            self._maybe_speak(result.text)
+        else:
+            if result.notices and conversation_id == self.conversation_id:
+                self._banner_action_kind = ""
+                self.banner.show_message(" ".join(result.notices), "warning")
+            if result.status == "complete":
+                self._maybe_speak(result.text, voice_turn)
         self.conversation_changed.emit()
         self._update_controls()
 
     def _on_failed(self, conversation_id: str, message: str) -> None:
         if self._stream_widget is not None:
+            self.messages_layout.removeWidget(self._stream_widget)
             self._stream_widget.deleteLater()
             self._stream_widget = None
         self._stream_steps = {}
+        self._voice_turn = False
         self._banner_action_kind = "retry"
         self.banner.show_message(message, "error", "Retry")
         self._update_controls()
@@ -533,6 +714,22 @@ class ChatView(QWidget):
         if self._banner_action_kind == "retry" and self.conversation_id:
             self.banner.hide()
             self.controller.regenerate(self.conversation_id)
+
+    # -- export -------------------------------------------------------------------------------------
+    def _export(self) -> None:
+        if not self.conversation_id:
+            return
+        title = self.title.text().strip() or "conversation"
+        safe = "".join(ch if ch.isalnum() or ch in " -_" else "_" for ch in title)[:60].strip() or "conversation"
+        path, _ = QFileDialog.getSaveFileName(self, "Export conversation", f"{safe}.md", "Markdown (*.md);;Text (*.txt)")
+        if not path:
+            return
+        try:
+            Path(path).write_text(self.services.conversations.export_markdown(self.conversation_id), encoding="utf-8")
+        except OSError as exc:
+            self.banner.show_message(f"Could not save the file: {exc.strerror or exc}", "error")
+            return
+        self.status_label.setText(f"Exported to {path}")
 
     # -- memory -------------------------------------------------------------------------------------
     def _remember(self, text: str) -> None:
@@ -570,23 +767,44 @@ class ChatView(QWidget):
         self.runner.submit(lambda: self.services.engine.summarize(conversation_id, CancelToken()), on_done=done, on_error=failed)
 
     # -- voice ----------------------------------------------------------------------------------------
-    def _start_recording(self) -> None:
+    def toggle_recording(self) -> None:
+        if self.services.voice_input.is_recording:
+            self._finish_recording()
+            return
+        if self.controller.is_busy or self._transcribing:
+            return
+        self.speech.stop()  # do not record GREEN's own voice
         try:
             self.services.voice_input.start_recording()
         except VoiceError as exc:
-            self.banner.show_message(str(exc), "warning")
+            self.banner.show_message(f"{exc} Open the Voice screen to set up voice.", "warning")
             return
         self._set_recording(True)
-        self.mic_button.setText("Recording… release")
-        self.status_label.setText("Recording from microphone (push-to-talk).")
+        self._voice_timer.start()
 
     def _set_recording(self, recording: bool) -> None:
         self.mic_button.setProperty("recording", recording)
+        self.mic_button.setText("Listening… click to stop" if recording else "Talk")
         repolish(self.mic_button)
+        self.level_bar.setVisible(recording)
+        self.level_bar.setValue(0)
+        if recording:
+            auto = self.services.config_store.get().voice.auto_stop_on_silence
+            self.status_label.setText("Listening… " + ("stops when you pause." if auto else "click Talk again when done."))
+        self._update_controls()
 
-    def _stop_recording(self) -> None:
+    def _poll_recording(self) -> None:
+        voice_input = self.services.voice_input
+        if not voice_input.is_recording:
+            self._voice_timer.stop()
+            return
+        self.level_bar.setValue(int(voice_input.level * 100))
+        if voice_input.should_auto_stop():
+            self._finish_recording()
+
+    def _finish_recording(self) -> None:
+        self._voice_timer.stop()
         self._set_recording(False)
-        self.mic_button.setText("Hold to talk")
         if not self.services.voice_input.is_recording:
             return
         try:
@@ -594,46 +812,41 @@ class ChatView(QWidget):
         except VoiceError as exc:
             self.banner.show_message(str(exc), "warning")
             return
+        self._transcribing = True
         self.status_label.setText("Transcribing…")
-        self.mic_button.setEnabled(False)
+        self._update_controls()
 
         def done(text: str) -> None:
-            self.mic_button.setEnabled(True)
+            self._transcribing = False
             self.status_label.setText("")
+            voice = self.services.config_store.get().voice
             current = self.input.toPlainText().strip()
             self.input.setPlainText(f"{current} {text}".strip())
-            if self.services.config_store.get().voice.auto_submit_transcript:
+            if voice.conversation_mode or voice.auto_submit_transcript:
+                self._voice_turn = voice.conversation_mode
                 self.send()
             else:
                 self.input.setFocus()
+            self._update_controls()
 
         def failed(error: Exception) -> None:
-            self.mic_button.setEnabled(True)
+            self._transcribing = False
             self.status_label.setText("")
             message = str(error) if isinstance(error, VoiceError) else "Transcription failed. Details are in the log."
             if not isinstance(error, VoiceError):
                 log.error("Transcription failed: %s", error.__class__.__name__)
             self.banner.show_message(message, "warning")
+            self._update_controls()
 
         self.runner.submit(lambda: self.services.voice_input.transcribe(audio), on_done=done, on_error=failed)
 
-    def _maybe_speak(self, text: str) -> None:
+    def _maybe_speak(self, text: str, voice_turn: bool) -> None:
         voice = self.services.config_store.get().voice
-        if not (voice.enabled and voice.speak_responses) or voice.muted or not text:
-            return
-        self._speaking = True
-        self._update_controls()
-
-        def finished(_=None) -> None:
-            self._speaking = False
+        should = (voice_turn and voice.conversation_mode) or (voice.enabled and voice.speak_responses)
+        if should and text:
+            self.speech.speak(text)
             self._update_controls()
 
-        def failed(error: Exception) -> None:
-            finished()
-            message = str(error) if isinstance(error, VoiceError) else "Speech output failed."
-            self.banner.show_message(message, "warning")
-
-        self.runner.submit(lambda: self.services.voice_output.speak(text), on_done=finished, on_error=failed)
-
-    def _stop_speaking(self) -> None:
-        self.services.voice_output.stop()
+    def shutdown(self) -> None:
+        self._voice_timer.stop()
+        self.speech.stop()

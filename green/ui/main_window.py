@@ -12,9 +12,11 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
     QStackedWidget,
+    QSystemTrayIcon,
     QWidget,
 )
 
@@ -25,6 +27,8 @@ from ..services.ollama_service import OllamaStatus
 from ..services.tool_registry import ConfirmationRequest
 from .chat_controller import ChatController
 from .chat_view import ChatView
+from .icon import make_app_icon
+from .speech import SpeechOutput
 from .dialogs import ConfirmationDialog
 from .diagnostics_view import DiagnosticsView
 from .memory_view import MemoryView
@@ -70,13 +74,14 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.stack, 1)
         self.setCentralWidget(central)
 
-        self.chat_view = ChatView(services, self.controller, self.runner, self.current_theme)
+        self.speech = SpeechOutput(services, self.runner, parent=self)
+        self.chat_view = ChatView(services, self.controller, self.runner, self.current_theme, self.speech)
         self.memory_view = MemoryView(services)
         self.reminders_view = RemindersView(services)
         self.workspace_view = WorkspaceView(services, self.runner)
         self.permissions_view = PermissionsView(services)
         self.activity_view = ToolActivityView(services)
-        self.voice_view = VoiceView(services, self.runner)
+        self.voice_view = VoiceView(services, self.runner, self.speech)
         self.settings_view = SettingsView(services, self.runner)
         self.diagnostics_view = DiagnosticsView(services, self.runner)
         self.pages = {
@@ -116,6 +121,8 @@ class MainWindow(QMainWindow):
         self.controller.tool_event.connect(self._on_tool_event)
         self.settings_view.settings_saved.connect(self._settings_saved)
         self.workspace_view.ask_about.connect(self._ask_about_file)
+        self.chat_view.model_switched.connect(lambda _name: self.check_status())
+        self.voice_view.voice_settings_changed.connect(self.chat_view.apply_config)
 
         QShortcut(QKeySequence("Ctrl+N"), self, activated=self.new_conversation)
         QShortcut(QKeySequence("Ctrl+L"), self, activated=lambda: (self.show_page("chat"), self.chat_view.input.setFocus()))
@@ -123,8 +130,15 @@ class MainWindow(QMainWindow):
 
         self.apply_theme()
         self.sidebar.reload()
-        self.sidebar.set_voice_visible(services.config_store.get().voice.enabled)
         self.show_page("chat")
+
+        self.app_icon = make_app_icon()
+        self.setWindowIcon(self.app_icon)
+        self._quitting = False
+        self._tray_hint_shown = False
+        # Set by the application entry point: closing the window (not hiding it to the tray) ends GREEN.
+        self.quit_app_on_close = False
+        self.tray = self._build_tray()
 
         self.status_timer = QTimer(self)
         self.status_timer.setInterval(STATUS_INTERVAL_MS)
@@ -190,7 +204,7 @@ class MainWindow(QMainWindow):
     def _settings_saved(self) -> None:
         self.apply_theme()
         self.chat_view.apply_config()
-        self.sidebar.set_voice_visible(self.services.config_store.get().voice.enabled)
+        self.voice_view.refresh()
         self.statusBar().showMessage("Settings saved.", 3000)
         self.check_status()
 
@@ -243,6 +257,8 @@ class MainWindow(QMainWindow):
 
     def _show_status(self, status: OllamaStatus) -> None:
         self._status_check_running = False
+        if status.reachable:
+            self.chat_view.set_models([m.name for m in status.installed_models], status.model)
         remote = "" if status.is_local else "  ·  REMOTE server: messages leave this computer"
         if not status.reachable:
             self._set_status("error", f"Ollama not reachable at {status.base_url}. Start Ollama, then click Check now.")
@@ -300,9 +316,50 @@ class MainWindow(QMainWindow):
         self._open_reminders[reminder.id] = box
         box.show()
         QApplication.alert(self)
+        if self.tray is not None:
+            self.tray.showMessage("GREEN reminder", reminder.title, self.app_icon, 15000)
+
+    # -- tray -----------------------------------------------------------------------------------------------
+    def _build_tray(self):
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return None
+        tray = QSystemTrayIcon(self.app_icon, self)
+        tray.setToolTip("GREEN")
+        menu = QMenu(self)
+        menu.addAction("Open GREEN", self.bring_to_front)
+        menu.addAction("New conversation", lambda: (self.bring_to_front(), self.new_conversation()))
+        menu.addSeparator()
+        menu.addAction("Quit GREEN", self.quit_app)
+        tray.setContextMenu(menu)
+        tray.activated.connect(
+            lambda reason: self.bring_to_front() if reason == QSystemTrayIcon.ActivationReason.Trigger else None
+        )
+        tray.show()
+        return tray
+
+    def bring_to_front(self) -> None:
+        self.show()
+        self.setWindowState((self.windowState() & ~Qt.WindowState.WindowMinimized) | Qt.WindowState.WindowActive)
+        self.raise_()
+        self.activateWindow()
+
+    def quit_app(self) -> None:
+        self._quitting = True
+        self.close()
+        if self._shutting_down:
+            QApplication.quit()
 
     # -- shutdown -------------------------------------------------------------------------------------------------
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
+        if (not self._quitting and self.tray is not None and not self._shutting_down
+                and self.services.config_store.get().ui.close_to_tray):
+            event.ignore()
+            self.hide()
+            if not self._tray_hint_shown:
+                self._tray_hint_shown = True
+                self.tray.showMessage("GREEN is still running", "Reminders keep working. Right-click the tray icon to quit.",
+                                      self.app_icon, 5000)
+            return
         if self.controller.is_busy and not self._shutting_down:
             answer = QMessageBox.question(
                 self,
@@ -316,6 +373,8 @@ class MainWindow(QMainWindow):
                 return
         self.shutdown()
         event.accept()
+        if self.quit_app_on_close:
+            QApplication.quit()
 
     def shutdown(self) -> None:
         if self._shutting_down:
@@ -324,6 +383,9 @@ class MainWindow(QMainWindow):
         self.status_timer.stop()
         self.reminder_timer.stop()
         self.controller.stop()  # also withdraws a pending approval
+        self.chat_view.shutdown()
+        if self.tray is not None:
+            self.tray.hide()
         for dialog in list(self._active_dialogs):
             dialog.reject()
         self.services.voice_output.stop()
