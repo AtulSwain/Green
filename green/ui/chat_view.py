@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
     QHBoxLayout,
+    QMessageBox,
     QLabel,
     QPlainTextEdit,
     QProgressBar,
@@ -109,7 +110,9 @@ def format_stats(stats: dict | None) -> str:
     """'qwen3:4b · 14.2 tok/s · 6.1 s' from measured statistics (empty if none were reported)."""
     if not stats:
         return ""
-    parts = [str(stats.get("model", ""))] if stats.get("model") else []
+    parts = ["🌐 online"] if stats.get("online") else []
+    if stats.get("model"):
+        parts.append(str(stats["model"]))
     if stats.get("tokens_per_second"):
         parts.append(f"{stats['tokens_per_second']} tok/s")
     if stats.get("seconds") is not None:
@@ -472,31 +475,98 @@ class ChatView(QWidget):
             else "Message GREEN…  (Ctrl+Enter to send)"
         )
         self.mic_button.setVisible(config.voice.enabled)
-        if self.model_combo.findText(config.ollama.model) < 0:
-            self.model_combo.addItem(config.ollama.model)
-        self.model_combo.setCurrentText(config.ollama.model)
+        self._rebuild_model_combo()
         self._update_controls()
 
-    def set_models(self, names: list[str], current: str) -> None:
-        """Fill the model switcher with the models installed in Ollama."""
+    def set_models(self, names: list[str], current: str | None = None) -> None:
+        """Remember the models installed in Ollama and refresh the switcher."""
+        self._local_models = list(names)
+        self._rebuild_model_combo()
+
+    def _rebuild_model_combo(self) -> None:
+        """Local Ollama models first, then models of additional services (🌐 = online)."""
+        config = self.services.config_store.get()
+        local = sorted(set(getattr(self, "_local_models", [])) | {config.ollama.model})
+        current = (config.active_provider, config.provider(config.active_provider).model
+                   if config.active_provider else config.ollama.model)
         self.model_combo.blockSignals(True)
         self.model_combo.clear()
-        for name in sorted(set(names) | {current}):
-            self.model_combo.addItem(name)
-        self.model_combo.setCurrentText(current)
+        for name in local:
+            self.model_combo.addItem(name, ("", name))
+        for provider in config.providers:
+            for model in provider.models:
+                prefix = "" if provider.is_local else "🌐 "
+                self.model_combo.addItem(f"{prefix}{provider.name}: {model}", (provider.id, model))
+                if not provider.is_local:
+                    self.model_combo.setItemData(
+                        self.model_combo.count() - 1,
+                        f"Online: messages are sent to {provider.name} ({provider.host})",
+                        Qt.ItemDataRole.ToolTipRole,
+                    )
+        for index in range(self.model_combo.count()):
+            if tuple(self.model_combo.itemData(index)) == tuple(current):
+                self.model_combo.setCurrentIndex(index)
+                break
         self.model_combo.blockSignals(False)
 
     def _model_selected(self, _index: int) -> None:
-        name = self.model_combo.currentText()
-        if not name or name == self.services.config_store.get().ollama.model:
+        data = self.model_combo.currentData()
+        if not data:
             return
+        provider_id, model = data
+        config = self.services.config_store.get()
+        if provider_id == "":
+            if config.active_provider == "" and config.ollama.model == model:
+                return
+
+            def mutate(c):
+                c.active_provider = ""
+                c.ollama.model = model
+        else:
+            provider = config.provider(provider_id)
+            if provider is None:
+                return
+            if not provider.is_local and not provider.consent_given and not self._confirm_online(provider):
+                self._rebuild_model_combo()
+                return
+
+            def mutate(c):
+                target = c.provider(provider_id)
+                target.model = model
+                target.consent_given = True
+                c.active_provider = provider_id
+                c.providers = list(c.providers)
         try:
-            self.services.config_store.update(lambda c: setattr(c.ollama, "model", name))
+            self.services.config_store.update(mutate)
         except Exception as exc:  # validation or disk error
             self.banner.show_message(f"Could not switch model: {exc}", "error")
+            self._rebuild_model_combo()
             return
-        self.status_label.setText(f"Now using {name} for new replies.")
-        self.model_switched.emit(name)
+        label = self.services.router.model_label()
+        if self.services.router.is_online():
+            missing_key = provider_id and not self.services.secrets.has(provider_id)
+            self.banner.show_message(
+                f"Using {label} online: your messages go to {self.services.router.destination()}."
+                + (" No API key is saved yet — add it under Settings → Online models." if missing_key else ""),
+                "warning",
+            )
+        else:
+            self.banner.hide()
+        self.status_label.setText(f"Now using {label} for new replies.")
+        self.model_switched.emit(label)
+
+    def _confirm_online(self, provider) -> bool:
+        answer = QMessageBox.warning(
+            self,
+            "Use an online model?",
+            f"{provider.name} runs on the internet ({provider.host}).\n\n"
+            "When you use it, your messages, relevant memories and tool results are sent to that service and "
+            "handled under its privacy terms. File and project tools stay off for online models unless you allow "
+            "them in Settings.\n\nYou can switch back to your local model at any time.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        return answer == QMessageBox.StandardButton.Yes
 
     def set_model_ready(self, ready: bool) -> None:
         self._model_ready = ready

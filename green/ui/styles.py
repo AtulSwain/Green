@@ -183,6 +183,10 @@ QLabel#CodeText {{ font-family: {MONO_FAMILY}; background: transparent; }}
 QProgressBar#LevelMeter {{ border: none; border-radius: 4px; background: {t.surface_alt}; height: 8px; }}
 QProgressBar#LevelMeter::chunk {{ background: {t.accent_fg}; border-radius: 4px; }}
 QLineEdit#SidebarSearch {{ background: {t.surface}; }}
+/* Number fields: arrows hidden via style (setButtonSymbols(NoButtons) collapses the text area to 1px).
+   Values still change with the keyboard arrows and mouse wheel. */
+QAbstractSpinBox::up-button, QAbstractSpinBox::down-button {{ width: 0px; border: none; }}
+QAbstractSpinBox::up-arrow, QAbstractSpinBox::down-arrow {{ width: 0px; height: 0px; }}
 QSlider {{ min-height: 20px; max-height: 20px; background: transparent; }}
 QSlider::groove:horizontal {{ height: 4px; background: {t.border}; border-radius: 2px; margin: 0; }}
 QSlider::sub-page:horizontal {{ height: 4px; background: {t.accent_fg}; border-radius: 2px; }}

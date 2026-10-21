@@ -13,6 +13,8 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMessageBox,
     QProgressDialog,
     QPushButton,
@@ -26,12 +28,13 @@ from pydantic import ValidationError
 from ..app.bootstrap import AppServices
 from ..config import FALLBACK_MODEL, AppConfig, OllamaSettings, format_validation_error
 from ..services.ollama_service import CancelToken, GenerationCancelled, OllamaError
+from ..services.secret_store import SecretStoreError
+from .provider_dialog import ProviderDialog
 from .workers import TaskRunner
 
 
 def _spin(minimum: int, maximum: int, step: int = 1) -> QSpinBox:
     box = QSpinBox()
-    box.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
     box.setRange(minimum, maximum)
     box.setSingleStep(step)
     return box
@@ -39,7 +42,6 @@ def _spin(minimum: int, maximum: int, step: int = 1) -> QSpinBox:
 
 def _dspin(minimum: float, maximum: float, step: float, decimals: int = 2) -> QDoubleSpinBox:
     box = QDoubleSpinBox()
-    box.setButtonSymbols(QDoubleSpinBox.ButtonSymbols.NoButtons)
     box.setRange(minimum, maximum)
     box.setSingleStep(step)
     box.setDecimals(decimals)
@@ -116,6 +118,42 @@ class SettingsView(QWidget):
         self.keep_alive.setToolTip("How long Ollama keeps the model loaded after a request, e.g. 5m, 1h, 0")
         form.addRow("Keep model loaded", self.keep_alive)
         layout.addWidget(model_box)
+
+        # Online / additional models
+        online_box = QGroupBox("Online models (optional)")
+        online = QVBoxLayout(online_box)
+        explain = QLabel(
+            "Add services such as Moonshot (Kimi), OpenRouter or a local LM Studio server, then pick their models "
+            "from the menu at the top of the chat. Your local Ollama model stays the private default."
+        )
+        explain.setObjectName("Muted")
+        explain.setWordWrap(True)
+        online.addWidget(explain)
+        self.provider_list = QListWidget()
+        self.provider_list.setMaximumHeight(120)
+        self.provider_list.itemSelectionChanged.connect(self._update_provider_buttons)
+        self.provider_list.itemDoubleClicked.connect(lambda _: self._edit_provider())
+        online.addWidget(self.provider_list)
+        provider_buttons = QHBoxLayout()
+        add_provider = QPushButton("Add service…")
+        add_provider.clicked.connect(self._add_provider)
+        self.edit_provider_button = QPushButton("Edit…")
+        self.edit_provider_button.clicked.connect(self._edit_provider)
+        self.remove_provider_button = QPushButton("Remove")
+        self.remove_provider_button.setObjectName("DangerButton")
+        self.remove_provider_button.clicked.connect(self._remove_provider)
+        for button in (add_provider, self.edit_provider_button, self.remove_provider_button):
+            provider_buttons.addWidget(button)
+        provider_buttons.addStretch(1)
+        online.addLayout(provider_buttons)
+        self.file_tools_online = QCheckBox("Allow file and project tools with online models (sends file contents online)")
+        self.file_tools_online.toggled.connect(self._save_file_tools_online)
+        online.addWidget(self.file_tools_online)
+        self.keyring_status = QLabel()
+        self.keyring_status.setObjectName("Muted")
+        self.keyring_status.setWordWrap(True)
+        online.addWidget(self.keyring_status)
+        layout.addWidget(online_box)
 
         # Context
         context_box = QGroupBox("Conversation context")
@@ -217,6 +255,7 @@ class SettingsView(QWidget):
         self.close_to_tray.setChecked(config.ui.close_to_tray)
         self.error_label.setText("")
         self._update_privacy_notice()
+        self._load_providers()
 
     def collect(self) -> AppConfig:
         """Build a validated config from the form. Raises ValidationError."""
@@ -360,3 +399,93 @@ class SettingsView(QWidget):
                 self.model_status.setText("Download failed. Details are in the log.")
 
         self.runner.submit(work, on_done=finished, on_error=failed, on_progress=on_progress)
+
+    # -- online models ---------------------------------------------------------------------------
+    def _load_providers(self) -> None:
+        config = self.services.config_store.get()
+        self.provider_list.clear()
+        for provider in config.providers:
+            key = "key saved" if self.services.secrets.has(provider.id) else ("no key needed" if provider.is_local else "NO KEY")
+            where = "this computer" if provider.is_local else provider.host
+            active = "  ← in use" if config.active_provider == provider.id else ""
+            item = QListWidgetItem(f"{provider.name} — {where} — {len(provider.models)} model(s) — {key}{active}")
+            item.setData(Qt.ItemDataRole.UserRole, provider.id)
+            self.provider_list.addItem(item)
+        self._loading_online = True
+        self.file_tools_online.setChecked(config.tools.allow_file_tools_online)
+        self._loading_online = False
+        ok, detail = self.services.secrets.available()
+        self.keyring_status.setText(detail if ok else f"Cannot store API keys: {detail}")
+        self._update_provider_buttons()
+
+    def _selected_provider_id(self) -> str | None:
+        item = self.provider_list.currentItem()
+        return item.data(Qt.ItemDataRole.UserRole) if item and self.provider_list.selectedItems() else None
+
+    def _update_provider_buttons(self) -> None:
+        has = self._selected_provider_id() is not None
+        self.edit_provider_button.setEnabled(has)
+        self.remove_provider_button.setEnabled(has)
+
+    def _save_file_tools_online(self, on: bool) -> None:
+        if getattr(self, "_loading_online", False):
+            return
+        self.services.config_store.update(lambda c: setattr(c.tools, "allow_file_tools_online", bool(on)))
+
+    def _add_provider(self) -> None:
+        self._open_provider_dialog(None)
+
+    def _edit_provider(self) -> None:
+        provider_id = self._selected_provider_id()
+        if provider_id:
+            self._open_provider_dialog(self.services.config_store.get().provider(provider_id))
+
+    def _open_provider_dialog(self, existing) -> None:
+        config = self.services.config_store.get()
+        dialog = ProviderDialog(self, self.runner, self.services.router, self.services.secrets, existing,
+                                {p.id for p in config.providers})
+        if not dialog.exec() or dialog.result_provider is None:
+            return
+        provider = dialog.result_provider
+        if dialog.result_key:
+            try:
+                self.services.secrets.set(provider.id, dialog.result_key)
+            except SecretStoreError as exc:
+                QMessageBox.warning(self, "API key not saved", str(exc))
+                return
+
+        def mutate(c):
+            others = [p for p in c.providers if p.id != provider.id]
+            c.providers = [*others, provider] if existing is None else [
+                provider if p.id == provider.id else p for p in c.providers
+            ]
+
+        try:
+            self.services.config_store.update(mutate)
+        except (ValidationError, OSError, ValueError) as exc:
+            QMessageBox.warning(self, "Not saved", str(exc))
+            return
+        self._load_providers()
+        self.settings_saved.emit()
+
+    def _remove_provider(self) -> None:
+        provider_id = self._selected_provider_id()
+        if not provider_id:
+            return
+        provider = self.services.config_store.get().provider(provider_id)
+        answer = QMessageBox.question(
+            self, "Remove service", f"Remove {provider.name} and delete its saved API key?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel, QMessageBox.StandardButton.Cancel,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self.services.secrets.delete(provider_id)
+
+        def mutate(c):
+            c.providers = [p for p in c.providers if p.id != provider_id]
+            if c.active_provider == provider_id:
+                c.active_provider = ""
+
+        self.services.config_store.update(mutate)
+        self._load_providers()
+        self.settings_saved.emit()

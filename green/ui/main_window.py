@@ -23,7 +23,6 @@ from PySide6.QtWidgets import (
 from .. import __app_name__, __version__
 from ..app.bootstrap import AppServices
 from ..models import Reminder
-from ..services.ollama_service import OllamaStatus
 from ..services.tool_registry import ConfirmationRequest
 from .chat_controller import ChatController
 from .chat_view import ChatView
@@ -249,17 +248,44 @@ class MainWindow(QMainWindow):
         if self._status_check_running or self._shutting_down:
             return
         self._status_check_running = True
-        self.runner.submit(self.services.ollama.status, on_done=self._show_status, on_error=self._status_failed)
+        router = self.services.router
+
+        def work():
+            status = router.status()
+            local_models = None
+            if router.active_provider() is not None:
+                try:
+                    local_models = [m.name for m in self.services.ollama.list_models()]
+                except Exception:
+                    local_models = None
+            return status, local_models, router.is_online(), router.model_label(), router.destination()
+
+        self.runner.submit(work, on_done=self._show_status, on_error=self._status_failed)
 
     def _status_failed(self, error: Exception) -> None:
         self._status_check_running = False
         self._set_status("error", "Could not check Ollama status.")
 
-    def _show_status(self, status: OllamaStatus) -> None:
+    def _show_status(self, result) -> None:
         self._status_check_running = False
-        if status.reachable:
-            self.chat_view.set_models([m.name for m in status.installed_models], status.model)
-        remote = "" if status.is_local else "  ·  REMOTE server: messages leave this computer"
+        status, local_models, online, label, destination = result
+        if local_models is not None:
+            self.chat_view.set_models(local_models)
+        elif status.reachable and self.services.router.active_provider() is None:
+            self.chat_view.set_models([m.name for m in status.installed_models])
+        self.chat_view._rebuild_model_combo()
+        provider = self.services.router.active_provider()
+        if provider is not None:
+            where = "on this computer" if not online else f"online at {destination} — messages leave this computer"
+            if not status.reachable:
+                self._set_status("error", f"{provider.name} not reachable: {status.error}")
+            elif not status.model_installed:
+                self._set_status("warning", f"{provider.name}: {status.error}")
+            else:
+                self._set_status("warning" if online else "ok", f"{'🌐 ' if online else ''}{label} ready · {where}")
+            self.chat_view.set_model_ready(status.ready)
+            return
+        remote = "  ·  🌐 ONLINE: messages are sent to " + destination if online else ""
         if not status.reachable:
             self._set_status("error", f"Ollama not reachable at {status.base_url}. Start Ollama, then click Check now.")
         elif not status.model_installed:
@@ -267,7 +293,7 @@ class MainWindow(QMainWindow):
         elif status.supports_tools is False:
             self._set_status("warning", f"Ollama {status.version} · {status.model} ready · this model does not support tools{remote}")
         else:
-            self._set_status("ok", f"Ollama {status.version} · {status.model} ready{remote}")
+            self._set_status("warning" if online else "ok", f"Ollama {status.version} · {status.model} ready{remote}")
         self.chat_view.set_model_ready(status.ready)
 
     def _set_status(self, state: str, text: str) -> None:
