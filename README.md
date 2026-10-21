@@ -21,7 +21,10 @@ By default nothing leaves your computer: no cloud AI, no analytics, no telemetry
 | Area | What works |
 | --- | --- |
 | Desktop app | Sidebar with conversations and navigation, chat screen, Memory, Reminders, Workspace, Tools & Permissions, Tool activity, Voice, Settings and Diagnostics screens; dark and light themes; empty, loading and error states; status bar with live Ollama/model status |
-| Conversations | New, select, rename (F2), delete (Del), automatic titles, copy message, stop generation (Esc), retry after an error, persisted in SQLite across restarts |
+| Conversations | New, select, rename (F2), delete (Del), search (titles and message text), automatic titles, copy message, stop generation (Esc), retry after an error, **Regenerate** the last reply, **Export** to Markdown, persisted in SQLite across restarts |
+| Chat screen | Quick-start cards, code blocks with **Copy code**, message timestamps, **model switcher** in the header, measured speed under each reply (e.g. `qwen3:4b · 14.2 tok/s · 6.1 s`, as reported by Ollama) |
+| Voice conversation | Click **Talk** (Ctrl+M), speak, and recording stops by itself when you pause; your words are sent and the answer is read aloud. Live microphone level, **Read aloud** on any reply, Stop speaking, mute. Spoken answers use the voices built into Windows (no download) |
+| Practical extras | `calculate` tool (exact math, safe parser), "remind me in 10 minutes", tray icon with reminder notifications and optional keep-running-in-tray |
 | Local model | Ollama connection and version check, installed-model check with `ollama pull` instructions, streaming responses, cancellation (interrupts even a blocked read), timeouts, out-of-memory and malformed-response handling, optional model download *only after you confirm* |
 | Memory | Preferences, project notes, facts, instructions, conversation summaries; view, search, filter, add, edit, delete, clear all (with confirmation); "Remember…" on any message; "Summarize to memory" with review before saving; only relevant memories are sent with a request |
 | Tool calling | Model ↔ tool loop over Ollama's native tool-calling API; checks the model actually supports tools; validates every call; per-call approval for controlled actions (never remembered); live step display ("Reading file …", ✓/✗ with the real result); step limit with a final no-tools answer; Stop works before, during approval and between steps |
@@ -35,16 +38,16 @@ By default nothing leaves your computer: no cloud AI, no analytics, no telemetry
 
 | Area | State |
 | --- | --- |
-| Voice input (push-to-talk) | Implemented with faster-whisper + sounddevice. Tested with fake audio devices and a fake model only. Needs testing with a real microphone on Windows. |
-| Voice output | Implemented with Piper + sounddevice (supports the piper-tts 1.2 and 1.3+ APIs). Tested with a fake voice only. |
+| Voice input | faster-whisper + sounddevice. The real packages install and load on Python 3.12, but recording and transcription were tested only with a fake microphone and fake model (no microphone or model download in the build environment). Needs testing on Windows. |
+| Voice output | Windows voices through Qt Text-to-Speech, tested with Qt's mock speech engine; real Windows voices not yet heard. Piper voices supported as an option (tested with a fake voice). |
 | Keyboard accessibility | Tab navigation, focus indicators, shortcuts (Ctrl+N, Ctrl+L, Ctrl+, , Esc, F2, Del) and safe dialog defaults. Not audited with a screen reader. |
 
 ### Not implemented (planned)
 
 - Wake-word listening (openWakeWord). Nothing listens in the background; the Voice screen says so.
 - Reminders while GREEN is closed (no Windows Task Scheduler or startup integration).
-- System-tray icon / minimise to tray.
-- Syntax-highlighted code blocks in chat (code is shown in a monospace font without highlighting).
+- Syntax colouring inside code blocks (code blocks are monospace with a Copy button, but not coloured).
+- Hands-free continuous conversation (you click Talk for each question, by design).
 - Encrypted database. Data is protected only by your Windows account.
 - Packaged installer (.exe/.msi).
 
@@ -101,8 +104,9 @@ is available.
 ### First steps
 
 1. Send a message. Replies stream in; press **Stop** (or Esc) to cancel.
-2. Open **Tools & Permissions** to decide what the model may do. Only `get_datetime`, `get_app_info` and
-   `get_system_info` are enabled initially. File tools also need at least one approved folder (Folders tab).
+2. Open **Tools & Permissions** to decide what the model may do. Enabled initially: the read-only
+   `get_datetime`, `get_app_info`, `get_system_info` and `calculate`, plus `create_reminder` and `save_memory`
+   (which only write to GREEN's own data and always ask first). File tools also need at least one approved folder (Folders tab).
 3. Open **Workspace** to choose a project folder for code help.
 
 ## Where data is stored
@@ -135,14 +139,15 @@ starts with defaults.
 | `ollama.num_ctx` | `8192` | Context length in tokens |
 | `ollama.num_predict` | `-1` | Maximum response tokens (`-1` = model default) |
 | `ollama.think` | `false` | Reasoning mode for models that support it |
-| `ollama.keep_alive` | `5m` | How long Ollama keeps the model loaded |
+| `ollama.keep_alive` | `30m` | How long Ollama keeps the model loaded |
 | `context.history_messages` | `20` | Recent messages sent with each request |
 | `context.memory_items` | `6` | Maximum relevant memories per request |
 | `context.max_tool_rounds` | `4` | Maximum tool steps per response |
 | `ui.theme` | `dark` | `dark` or `light` |
 | `ui.font_point_size` | `10` | Text size |
 | `ui.send_on_enter` | `true` | Enter sends; otherwise Ctrl+Enter |
-| `tools.enabled_tools` | `get_datetime`, `get_app_info`, `get_system_info` | Tool name → enabled |
+| `ui.close_to_tray` | `false` | Closing the window keeps GREEN running in the tray |
+| `tools.enabled_tools` | `get_datetime`, `get_app_info`, `get_system_info`, `calculate`, `create_reminder`, `save_memory` | Tool name → enabled |
 | `tools.approved_directories` | `[]` | Absolute folders readable by the file tools |
 | `tools.output_directory` | `""` | Where `create_text_file` may create new files |
 | `tools.approved_applications` | `{}` | Name → absolute path of an `.exe` that `open_application` may start |
@@ -151,27 +156,48 @@ starts with defaults.
 | `tools.max_read_bytes` | `200000` | Maximum bytes read from one file |
 | `tools.max_results` | `200` | Maximum listing/search results |
 | `workspace.project_directory` | `""` | Project folder for the developer tools |
-| `voice.*` | voice off | See [Voice setup](#voice-setup) |
+| `voice.*` | Talk button off | Edited on the Voice screen; see [Voice setup](#voice-setup) |
 
 ## Voice setup
 
-Voice is optional and off by default. Everything runs locally; audio is recorded only while you hold the
-**Hold to talk** button and is never stored or uploaded.
+Voice is optional. Everything runs on your computer: the microphone is used only after you click **Talk**, and
+audio is never saved or uploaded.
 
-1. `pip install -r requirements-voice.txt`
-2. **Speech recognition (faster-whisper).** Either
-   - download a converted model folder (for example `Systran/faster-whisper-base.en` from Hugging Face) and
-     choose it under **Settings → Voice → Speech model → Folder…**, or
-   - type a model name such as `base.en` and tick *Allow a one-time download* (about 75 MB for tiny models up to
-     about 3 GB for large ones).
-3. **Speech output (Piper).** Download a voice — both the `.onnx` file and its `.onnx.json` — for example from
-   the `rhasspy/piper-voices` collection, and choose the `.onnx` under **Settings → Voice → Piper voice**.
-   Check each voice's licence on its model card.
-4. Tick **Enable voice features** and save. The **Voice** screen shows what is available and lets you test
-   speech output, mute, and turn spoken replies on or off.
+**Hearing GREEN** needs nothing extra on Windows — it uses the voices built into Windows. Click **Read aloud** on
+any reply, or open the **Voice** screen and click **Test voice**. More voices: Windows Settings → Time & language →
+Speech → Add voices.
 
-If anything is missing, GREEN explains what and keeps working as a text assistant. On Windows, also check
+**Talking to GREEN:**
+
+1. In GREEN's PowerShell window (with `(.venv)` showing): `pip install -r requirements-voice.txt`
+2. Restart GREEN and open the **Voice** screen.
+3. Tick **Show the Talk button in the chat**.
+4. Under *Speech recognition*, pick a model (`base.en` is recommended, about 145 MB; `tiny.en` is fastest), tick
+   **Allow GREEN to download the speech model once**, and click **Prepare speech model**. Or choose a model
+   folder you downloaded yourself (for example `Systran/faster-whisper-base.en`).
+5. In the chat, click **Talk** (or press Ctrl+M), ask your question and pause. GREEN stops listening by itself,
+   sends what you said and reads the answer aloud.
+
+Options on the Voice screen: answer out loud only for spoken questions (default) or for every reply, pause
+length, automatic stop on/off, voice and speed, mute.
+
+*Optional Piper voices* (more natural, larger download): `pip install -r requirements-piper.txt`, download a
+voice (`.onnx` plus `.onnx.json`, e.g. from `rhasspy/piper-voices`), then choose *Piper voice file* as the engine
+on the Voice screen. Piper 1.3+ is GPL-3.0 licensed; check each voice's licence.
+
+If something is missing, GREEN says what and keeps working as a text assistant. On Windows, also check
 *Settings → Privacy & security → Microphone* allows desktop apps to use the microphone.
+
+## Speed tips
+
+The model runs on your own hardware, so speed depends on it. Each reply shows the measured speed.
+
+- Switch to a smaller model with the switcher at the top of the chat: `ollama pull qwen3:4b` (about twice as fast
+  as 8b) or `qwen3:1.7b` (much faster, less capable).
+- Run `ollama ps` while GREEN answers: `100% GPU` is fast; `CPU` means the model does not fit in graphics memory.
+- Settings → *Context length* 4096 instead of 8192 makes each request lighter.
+- *Keep model loaded* now defaults to 30 minutes so the model does not reload between questions.
+- Leave *reasoning mode* off unless you need it; it makes replies much slower.
 
 ## Tools and tool calling
 
@@ -190,6 +216,7 @@ last turn without tools and must answer with what it has. At most 5 calls run pe
 | Tool | Permission | Asks you? | What it does |
 | --- | --- | --- | --- |
 | `get_datetime` | Read | No | Local date, time and time zone |
+| `calculate` | Read | No | Exact arithmetic (+ − × ÷, powers, sqrt, sin, log, …) with a safe parser — no code execution |
 | `get_app_info` | Read | No | GREEN's non-sensitive settings (model, approved folders, enabled tools) |
 | `get_system_info` | Read | No | OS version (e.g. "Windows 11 (build 22631)"), Python, GREEN version, Ollama reachability, model and tool support. No user name, host name, environment variables or paths |
 | `list_directory` | Read | No | List a folder inside approved folders (result limit) |
@@ -199,7 +226,7 @@ last turn without tools and must answer with what it has. At most 5 calls run pe
 | `create_text_file` | Controlled | Every time | Create a file in the output folder. An existing file is replaced only if the model passes `overwrite=true` **and** you approve an "Overwrite existing file?" dialog showing the diff; a backup is kept |
 | `open_application` | Controlled | Every time | Start an approved `.exe` by its approved name; no arguments, no shell; reports a program that exits with an error immediately |
 | `open_website` | Controlled | When needed | Opens http(s) links only. Allow-listed sites over https open directly; other sites (if allowed in settings), plain http, raw IP addresses, unusual ports and look-alike international domains always ask, with the reason shown |
-| `save_memory`, `create_reminder` | Controlled | Every time | Store a memory / reminder in GREEN |
+| `save_memory`, `create_reminder` | Controlled | Every time | Store a memory / a reminder (at a time, or `in_minutes`) in GREEN |
 | `propose_file_change` | Controlled | Every time | Show a diff for a project file and apply it only if approved (backup kept) |
 
 Approval dialogs do not block GREEN: you can keep reading, and **Stop** withdraws a pending approval so the action
@@ -267,8 +294,9 @@ Ollama, microphone, network or Windows: an in-process fake Ollama server (`tests
 responses, tool calls and errors over real HTTP, and voice tests use fake audio devices. Tests only touch
 temporary folders.
 
-Last run (Linux, Python 3.12.3, PySide6 6.12.0, offscreen): **203 passed, 2 skipped** — the two skips are
-Windows-only checks (`.exe`-only application rule and NTFS alternate data streams).
+Last run (Linux, Python 3.12.3, PySide6 6.12.0, offscreen): **254 passed, 3 skipped**. Two skips are
+Windows-only checks (`.exe`-only application rule, NTFS alternate data streams); the third checks behaviour
+without the voice packages, which were installed for this run.
 
 ### Verification status
 
@@ -289,7 +317,9 @@ Still requires manual testing on Windows:
   could not download Ollama or models, so tool calling was verified only against a fake server that follows
   Ollama's documented API format.
 - Model download progress through *Download model…*.
-- Push-to-talk with a real microphone and faster-whisper model; Piper speech output.
+- Talking with a real microphone and faster-whisper model (silence detection thresholds may need tuning for
+  your microphone), and hearing replies with real Windows voices.
+- The tray icon and reminder notifications on Windows (the build environment has no system tray).
 - `open_application` and `open_website` launching real programs and the default browser.
 - Display scaling, fonts and keyboard navigation on Windows 10/11.
 
@@ -307,7 +337,10 @@ Still requires manual testing on Windows:
 | *Settings file was invalid* on start | Your previous file was kept as `config.json.invalid-<time>` next to the new one. |
 | *Database could not be read and was moved aside* | The old file was kept as `green.db.corrupt-<time>`. You can inspect it with any SQLite tool. |
 | *Database was created by a newer version of GREEN* | Use the newer GREEN version; the file was not modified. |
-| Voice: *not installed* | `pip install -r requirements-voice.txt` in the same environment. |
+| Voice: *not installed* | `pip install -r requirements-voice.txt` in GREEN's PowerShell window (with `(.venv)` showing), then restart GREEN. |
+| Voice: recording never stops by itself | Your room may be noisy for the default sensitivity; click **Talk** again to stop, or turn off automatic stop on the Voice screen. |
+| No spoken answer | Check the Voice screen status and click **Test voice**. Make sure *Mute* is off and Windows has a voice installed. |
+| Replies are slow | See [Speed tips](#speed-tips). |
 | Voice: *not available locally* | Choose a downloaded model folder or allow the one-time download in Settings → Voice. |
 | Voice: *No microphone available* | Connect a microphone and check Windows microphone privacy settings. |
 | Anything else | Open **Diagnostics**, run checks, and look at `%LOCALAPPDATA%\GREEN\logs\green.log`. |

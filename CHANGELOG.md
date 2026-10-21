@@ -1,5 +1,27 @@
 # Changelog
 
+## 2.0.1 — Stage 3: voice conversation, practical features and UI polish
+
+### Added
+- Voice conversation: click **Talk** (Ctrl+M), speak, recording stops automatically after a pause, the
+  transcript is sent and the answer is read aloud. Live microphone level meter.
+- Spoken answers through Qt Text-to-Speech, using the voices built into Windows (no download); voice and speed
+  selection; **Read aloud** on every reply; Piper remains available as an option (`requirements-piper.txt`).
+- Voice screen with all voice settings, including "Prepare speech model" (explicitly allowed download).
+- Chat: quick-start cards, code blocks with Copy code, timestamps, Regenerate, Export to Markdown, model switcher
+  and measured speed per reply (tokens/second from Ollama).
+- Sidebar search across conversation titles and message text.
+- `calculate` tool (safe AST-based arithmetic) and `create_reminder(in_minutes=…)`.
+- App icon, tray icon with reminder notifications, optional keep-running-in-tray.
+
+### Changed
+- `ollama.keep_alive` defaults to 30 minutes to avoid reloading the model between questions.
+- Enabled by default: `calculate`, `create_reminder`, `save_memory` (the latter two always ask first).
+- `requirements-voice.txt` no longer installs Piper.
+
+### Fixed
+- "Copied" button labels could reset after their message was removed, raising an error.
+
 ## 2.0.1 — Stage 2: tool calling and safe desktop actions
 
 Still version 2.0.1 (not yet released separately). See `docs/stage2-audit.md` for the defects this addresses.
