@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 log = logging.getLogger(__name__)
 
@@ -138,6 +138,8 @@ class ToolSettings(_Section):
     allowed_websites: list[str] = Field(default_factory=list)
     # When true, open_website may open sites that are not on the allow-list after the user confirms.
     confirm_unlisted_websites: bool = True
+    # File and project tools send file contents to the model; off for online models unless allowed here.
+    allow_file_tools_online: bool = False
     max_read_bytes: int = Field(200_000, ge=1_000, le=5_000_000)
     max_results: int = Field(200, ge=1, le=2_000)
 
@@ -224,6 +226,79 @@ class WorkspaceSettings(_Section):
         return value
 
 
+_PROVIDER_ID_RE = re.compile(r"^[a-z0-9][a-z0-9\-]{0,31}$")
+_PROVIDER_MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@\-]{0,199}$")
+
+
+class ProviderSettings(_Section):
+    """An additional model service that speaks the OpenAI-compatible chat API.
+
+    The API key is never stored here; it is kept in the operating system's credential store.
+    """
+
+    id: str
+    name: str = Field(..., min_length=1, max_length=60)
+    base_url: str
+    models: list[str] = Field(default_factory=list)
+    model: str = ""
+    consent_given: bool = False  # the user accepted that messages are sent to this service
+
+    @field_validator("id")
+    @classmethod
+    def _validate_id(cls, value: str) -> str:
+        value = value.strip().lower()
+        if not _PROVIDER_ID_RE.match(value) or value == "ollama":
+            raise ValueError("Provider id must be lowercase letters, digits or dashes (and not 'ollama')")
+        return value
+
+    @field_validator("base_url")
+    @classmethod
+    def _validate_base(cls, value: str) -> str:
+        value = value.strip().rstrip("/")
+        parsed = urlparse(value)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            raise ValueError("Address must start with https:// (or http:// for a server on this computer)")
+        if parsed.scheme == "http" and not is_loopback_host(parsed.hostname):
+            raise ValueError("Online services must use https:// so your messages and key are encrypted")
+        if parsed.username or parsed.password or parsed.query or parsed.fragment:
+            raise ValueError("Do not put credentials, a query or a fragment in the address")
+        try:
+            _ = parsed.port
+        except ValueError as exc:
+            raise ValueError("Address has an invalid port") from exc
+        return value
+
+    @field_validator("models")
+    @classmethod
+    def _validate_models(cls, value: list[str]) -> list[str]:
+        cleaned: list[str] = []
+        for name in value:
+            name = name.strip()
+            if not name:
+                continue
+            if not _PROVIDER_MODEL_RE.match(name):
+                raise ValueError(f"Invalid model name: {name!r}")
+            if name not in cleaned:
+                cleaned.append(name)
+        return cleaned
+
+    @field_validator("model")
+    @classmethod
+    def _validate_model(cls, value: str) -> str:
+        value = value.strip()
+        if value and not _PROVIDER_MODEL_RE.match(value):
+            raise ValueError(f"Invalid model name: {value!r}")
+        return value
+
+    @property
+    def is_local(self) -> bool:
+        return is_loopback_host(urlparse(self.base_url).hostname)
+
+    @property
+    def host(self) -> str:
+        return urlparse(self.base_url).hostname or ""
+
+
 class AppConfig(_Section):
     config_version: int = 1
     ollama: OllamaSettings = Field(default_factory=OllamaSettings)
@@ -232,6 +307,20 @@ class AppConfig(_Section):
     tools: ToolSettings = Field(default_factory=ToolSettings)
     context: ContextSettings = Field(default_factory=ContextSettings)
     workspace: WorkspaceSettings = Field(default_factory=WorkspaceSettings)
+    providers: list[ProviderSettings] = Field(default_factory=list)
+    active_provider: str = ""  # "" = the local Ollama model; otherwise a provider id
+
+    @model_validator(mode="after")
+    def _check_providers(self):
+        ids = [p.id for p in self.providers]
+        if len(ids) != len(set(ids)):
+            raise ValueError("Provider ids must be unique")
+        if self.active_provider and self.active_provider not in ids:
+            object.__setattr__(self, "active_provider", "")  # removed provider: fall back to local
+        return self
+
+    def provider(self, provider_id: str) -> ProviderSettings | None:
+        return next((p for p in self.providers if p.id == provider_id), None)
 
 
 def format_validation_error(error: ValidationError) -> str:

@@ -83,8 +83,10 @@ class _Stats:
             self.load_ns += chunk.load_duration_ns
             self.requests += 1
 
-    def as_dict(self, model: str) -> dict[str, Any]:
+    def as_dict(self, model: str, online: bool = False) -> dict[str, Any]:
         result: dict[str, Any] = {"model": model, "seconds": round(time.monotonic() - self.started, 2)}
+        if online:
+            result["online"] = True
         if self.tokens and self.eval_ns:
             result["tokens"] = self.tokens
             result["tokens_per_second"] = round(self.tokens / (self.eval_ns / 1e9), 1)
@@ -98,13 +100,19 @@ def format_memories(memories: list[MemoryRecord]) -> str:
     return MEMORY_HEADER + "\n".join(lines)
 
 
-def _extract_call(call: Any) -> tuple[Any, Any]:
+# Tools that send file contents to the model; withheld from online models unless the user allows it.
+FILE_TOOLS = frozenset({"list_directory", "search_files", "read_text_file", "workspace_list_files",
+                        "workspace_read_file", "workspace_search_text", "propose_file_change"})
+
+
+def _extract_call(call: Any) -> tuple[Any, Any, str | None]:
     if not isinstance(call, dict):
-        return None, None
+        return None, None, None
+    call_id = call.get("id") if isinstance(call.get("id"), str) else None
     function = call.get("function")
     if not isinstance(function, dict):
-        return call.get("name"), call.get("arguments")
-    return function.get("name"), function.get("arguments")
+        return call.get("name"), call.get("arguments"), call_id
+    return function.get("name"), function.get("arguments"), call_id
 
 
 class ChatEngine:
@@ -115,8 +123,10 @@ class ChatEngine:
         memory: MemoryService,
         registry: ToolRegistry,
         config_provider: Callable[[], AppConfig],
+        router=None,
     ):
         self.ollama = ollama
+        self.router = router
         self.conversations = conversations
         self.memory = memory
         self.registry = registry
@@ -152,6 +162,15 @@ class ChatEngine:
         return [{"role": "system", "content": system}, *selected]
 
     # -- tool support -------------------------------------------------------------
+    def _backend(self):
+        return self.router.backend() if self.router is not None else self.ollama
+
+    def _model_label(self, config: AppConfig) -> str:
+        return self.router.model_label() if self.router is not None else config.ollama.model
+
+    def _is_online(self) -> bool:
+        return self.router.is_online() if self.router is not None else not self.config_provider().ollama.is_local
+
     def tool_support(self, model: str) -> bool | None:
         """Whether Ollama reports that ``model`` supports tool calling (None = not reported).
 
@@ -160,7 +179,7 @@ class ChatEngine:
         if model in self._tool_support_cache:
             return self._tool_support_cache[model]
         try:
-            capabilities = self.ollama.model_capabilities(model)
+            capabilities = self._backend().model_capabilities(model)
         except OllamaError:
             return None  # the chat request itself will report connection or model problems
         supported = None if capabilities is None else "tools" in capabilities
@@ -178,14 +197,18 @@ class ChatEngine:
         on_tool_event: EventCallback | None = None,
     ) -> GenerationResult:
         config = self.config_provider()
+        model_label = self._model_label(config)
+        online = self._is_online()
         notices: list[str] = []
         schemas = self.registry.model_schemas()
+        if online and not config.tools.allow_file_tools_online:
+            schemas = [s for s in schemas if s["function"]["name"] not in FILE_TOOLS]
         if schemas:
             on_status("Checking model capabilities…")
-            if self.tool_support(config.ollama.model) is False:
+            if self.tool_support(model_label) is False:
                 schemas = []
                 notices.append(
-                    f"The model '{config.ollama.model}' does not support tool calling, so GREEN answered without "
+                    f"The model '{model_label}' does not support tool calling, so GREEN answered without "
                     "tools. Choose a tool-capable model (for example qwen3:8b) in Settings to use tools."
                 )
         messages = self.build_messages(conversation_id, tools_enabled=bool(schemas))
@@ -221,9 +244,9 @@ class ChatEngine:
                         calls.extend(chunk.tool_calls)
                 except _ToolsUnsupported:
                     schemas = []
-                    self._tool_support_cache[config.ollama.model] = False
+                    self._tool_support_cache[model_label] = False
                     notices.append(
-                        f"The model '{config.ollama.model}' rejected tool calling, so GREEN answered without tools."
+                        f"The model '{model_label}' rejected tool calling, so GREEN answered without tools."
                     )
                     messages[0]["content"] += NO_TOOLS_NOTE
                     continue
@@ -236,10 +259,11 @@ class ChatEngine:
                     extracted = [_extract_call(call) for call in calls]
                     # Echo back only well-formed calls so Ollama accepts the follow-up request.
                     messages.append({"role": "assistant", "content": text, "tool_calls": [
-                        {"function": {"name": str(name), "arguments": args if isinstance(args, dict) else {}}}
-                        for name, args in extracted
+                        {"function": {"name": str(name), "arguments": args if isinstance(args, dict) else {}},
+                         **({"id": call_id} if call_id else {})}
+                        for name, args, call_id in extracted
                     ]})
-                    for name, args in extracted[:MAX_CALLS_PER_ROUND]:
+                    for name, args, call_id in extracted[:MAX_CALLS_PER_ROUND]:
                         cancel.raise_if_cancelled()
                         on_status("Planning tool use…")
                         result = self.registry.invoke(
@@ -247,12 +271,13 @@ class ChatEngine:
                         )
                         tools_used.append(result.to_record())
                         messages.append(
-                            {"role": "tool", "content": result.to_model_content(), "tool_name": result.tool_name}
+                            {"role": "tool", "content": result.to_model_content(), "tool_name": result.tool_name,
+                             **({"tool_call_id": call_id} if call_id else {})}
                         )
                         cancel.raise_if_cancelled()
-                    for name, _ in extracted[MAX_CALLS_PER_ROUND:]:
+                    for name, _, call_id in extracted[MAX_CALLS_PER_ROUND:]:
                         messages.append({
-                            "role": "tool", "tool_name": str(name),
+                            "role": "tool", "tool_name": str(name), **({"tool_call_id": call_id} if call_id else {}),
                             "content": json.dumps({"tool": str(name), "ok": False, "error": {
                                 "code": "too_many_calls", "message": "Too many tool calls in one step; not run."}}),
                         })
@@ -273,7 +298,7 @@ class ChatEngine:
                     status="cancelled", metadata={"tools": tools_used},
                 )
             return GenerationResult("cancelled", partial, message, tools_used=tools_used, notices=notices,
-                                    stats=stats.as_dict(config.ollama.model))
+                                    stats=stats.as_dict(model_label, online))
         except OllamaError as exc:
             partial = visible()
             message = None
@@ -289,16 +314,17 @@ class ChatEngine:
         if limit_reached:
             final += "\n\n_(GREEN stopped calling tools after reaching the limit of " \
                      f"{config.context.max_tool_rounds} tool steps.)_"
-        result_stats = stats.as_dict(config.ollama.model)
+        result_stats = stats.as_dict(model_label, online)
         message = self.conversations.add_message(
             conversation_id, "assistant", final,
-            metadata={"tools": tools_used, "model": config.ollama.model, "notices": notices, "stats": result_stats},
+            metadata={"tools": tools_used, "model": model_label, "online": online, "notices": notices,
+                      "stats": result_stats},
         )
         return GenerationResult("complete", final, message, tools_used=tools_used, notices=notices, stats=result_stats)
 
     def _stream(self, messages, cancel, schemas):
         try:
-            yield from self.ollama.chat_stream(messages, cancel, tools=schemas or None)
+            yield from self._backend().chat_stream(messages, cancel, tools=schemas or None)
         except OllamaError as exc:
             if schemas and "does not support tools" in str(exc).lower():
                 log.info("Model does not support tools; continuing without them")
@@ -313,7 +339,7 @@ class ChatEngine:
         if not messages:
             raise ValueError("This conversation has no messages to summarize.")
         messages.append({"role": "user", "content": SUMMARY_PROMPT})
-        return self.ollama.complete(messages, cancel)
+        return self._backend().complete(messages, cancel)
 
 
 class _ToolsUnsupported(Exception):

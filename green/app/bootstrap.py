@@ -13,6 +13,8 @@ from ..paths import AppPaths, default_paths
 from ..services.chat_engine import ChatEngine
 from ..services.conversation_service import ConversationService
 from ..services.memory_service import MemoryService
+from ..services.model_router import ModelRouter
+from ..services.secret_store import SecretStore
 from ..services.ollama_service import OllamaService
 from ..services.permission_service import AuditLog, PermissionService
 from ..services.reminder_service import ReminderService
@@ -40,6 +42,8 @@ class AppServices:
     engine: ChatEngine
     voice_input: VoiceInputService
     voice_output: VoiceOutputService
+    secrets: SecretStore
+    router: ModelRouter
     recent_errors: RecentErrorsHandler | None = None
     startup_notices: list[str] = field(default_factory=list)
 
@@ -78,11 +82,13 @@ def build_services(paths: AppPaths | None = None, *, configure_logs: bool = True
     ollama = OllamaService(lambda: store.get().ollama)
     context.ollama = ollama
     register_default_tools(registry, context)
-    engine = ChatEngine(ollama, conversations, memory, registry, store.get)
+    secrets = SecretStore()
+    router = ModelRouter(store.get, ollama, secrets)
+    engine = ChatEngine(ollama, conversations, memory, registry, store.get, router)
     voice_in = VoiceInputService(lambda: store.get().voice)
     voice_out = VoiceOutputService(lambda: store.get().voice)
     log.info("Services initialised (schema %d)", init.schema_version)
     return AppServices(
         paths, store, db, conversations, memory, reminders, permissions, audit, registry, context,
-        ollama, engine, voice_in, voice_out, recent, notices,
+        ollama, engine, voice_in, voice_out, secrets, router, recent, notices,
     )

@@ -59,6 +59,11 @@ def build_report(services) -> DiagnosticsReport:
     report.add("PySide6", pyside_version)
     report.add("SQLite", sqlite3.sqlite_version)
 
+    router = getattr(services, "router", None)
+    if router is not None:
+        online = router.is_online()
+        report.add("Active model", f"{router.model_label()} — {'ONLINE: messages go to ' if online else ''}{router.destination()}",
+                   not online)
     status = services.ollama.status()
     report.add("Ollama URL", status.base_url + ("" if status.is_local else "  (REMOTE — conversation content leaves this computer)"),
                status.is_local)
