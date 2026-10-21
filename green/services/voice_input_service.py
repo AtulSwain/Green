@@ -2,8 +2,8 @@
 
 Everything here is optional: when the packages, a microphone or the model are
 missing, :meth:`VoiceInputService.check` explains why and the rest of GREEN keeps
-working. Audio is never sent anywhere; recording only happens while the user
-holds the push-to-talk button.
+working. Audio is never sent anywhere; recording only happens after the user clicks
+the microphone button, and stops on a second click, after silence, or at the time limit.
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from ..config import VoiceSettings
 log = logging.getLogger(__name__)
 
 SAMPLE_RATE = 16_000
+SPEECH_RMS = 0.02  # RMS loudness treated as speech (float samples in -1..1)
 
 
 class VoiceError(Exception):
@@ -51,6 +52,11 @@ class VoiceInputService:
         self._stream = None
         self._frames: list[Any] = []
         self._frame_count = 0
+        self._max_frames = 0
+        # Live input analysis, written by the audio thread and read by the GUI.
+        self.level = 0.0  # 0..1 for a level meter
+        self._speech_seen = False
+        self._silent_frames = 0
 
     # -- dependency checks ----------------------------------------------------------
     def _sounddevice(self):
@@ -76,7 +82,7 @@ class VoiceInputService:
         return ComponentStatus(
             True,
             f"faster-whisper installed; model '{model}' must already be cached or be a local folder "
-            "(downloads are disabled in Settings).",
+            "(tick 'Allow … download' on the Voice screen).",
         )
 
     def check_microphone(self) -> ComponentStatus:
@@ -101,13 +107,18 @@ class VoiceInputService:
                 return
             sd = self._sounddevice()
             max_frames = SAMPLE_RATE * self._settings_provider().max_recording_seconds
+            self._max_frames = max_frames
             self._frames = []
             self._frame_count = 0
+            self.level = 0.0
+            self._speech_seen = False
+            self._silent_frames = 0
 
             def callback(indata, frames, time_info, status):  # runs on the audio thread
                 if self._frame_count < max_frames:
                     self._frames.append(indata.copy())
                     self._frame_count += frames
+                    self._analyse(indata, frames)
 
             try:
                 stream = sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="float32", callback=callback)
@@ -117,11 +128,36 @@ class VoiceInputService:
             self._stream = stream
             log.info("Push-to-talk recording started")
 
+    def _analyse(self, block, frames: int) -> None:
+        """Track loudness so the recording can stop by itself after the speaker goes quiet."""
+        try:
+            rms = float((block.astype("float32") ** 2).mean() ** 0.5)
+        except Exception:
+            return
+        self.level = min(1.0, rms * 8)
+        if rms >= SPEECH_RMS:
+            self._speech_seen = True
+            self._silent_frames = 0
+        else:
+            self._silent_frames += frames
+
+    def should_auto_stop(self) -> bool:
+        """True once speech was heard and then silence lasted long enough, or the time limit was hit."""
+        if self._stream is None:
+            return False
+        if self._max_frames and self._frame_count >= self._max_frames:
+            return True
+        settings = self._settings_provider()
+        if not settings.auto_stop_on_silence or not self._speech_seen:
+            return False
+        return self._silent_frames >= int(settings.silence_seconds * SAMPLE_RATE)
+
     def stop_recording(self):
         """Stop recording and return mono float32 audio (numpy array)."""
         with self._lock:
             stream, self._stream = self._stream, None
             frames, self._frames = self._frames, []
+            self.level = 0.0
         if stream is None:
             raise VoiceError("Not recording.")
         try:
@@ -159,12 +195,18 @@ class VoiceInputService:
         except Exception as exc:
             if not settings.allow_model_download:
                 raise VoiceError(
-                    f"The speech model '{settings.stt_model}' is not available locally. Point Settings → Voice "
-                    "to a downloaded model folder, or allow the one-time model download."
+                    f"The speech model '{settings.stt_model}' is not available locally. On the Voice screen, tick "
+                    "'Allow GREEN to download the speech model once' and click Prepare speech model, or choose a "
+                    "downloaded model folder."
                 ) from exc
             raise VoiceError(f"Could not load the speech model: {exc}") from exc
         self._model_key = key
         return self._model
+
+    def prepare(self) -> str:
+        """Load the speech model now (downloading it first only if the user allowed that)."""
+        self._load_model()
+        return self._settings_provider().stt_model
 
     def transcribe(self, audio) -> str:
         if audio is None or len(audio) < SAMPLE_RATE * 0.3:

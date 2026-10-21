@@ -59,7 +59,7 @@ class OllamaSettings(_Section):
     num_ctx: int = Field(8192, ge=512, le=262144)
     num_predict: int = Field(-1, ge=-1, le=32768, description="-1 lets the model decide")
     think: bool = Field(False, description="Enable the model's reasoning mode (slower)")
-    keep_alive: str = Field("5m", pattern=r"^-?\d+[smh]?$")
+    keep_alive: str = Field("30m", pattern=r"^-?\d+[smh]?$")
 
     @field_validator("base_url")
     @classmethod
@@ -97,6 +97,7 @@ class UISettings(_Section):
     theme: Literal["dark", "light"] = "dark"
     font_point_size: int = Field(10, ge=8, le=20)
     send_on_enter: bool = True
+    close_to_tray: bool = False  # closing the window keeps GREEN running in the system tray
 
 
 class VoiceSettings(_Section):
@@ -107,16 +108,29 @@ class VoiceSettings(_Section):
     stt_language: str = Field("en", max_length=8)
     allow_model_download: bool = False
     piper_model_path: str = ""
-    speak_responses: bool = False
+    speak_responses: bool = False  # read every reply aloud (not only replies to voice messages)
     muted: bool = False
     auto_submit_transcript: bool = False
     max_recording_seconds: int = Field(30, ge=1, le=300)
+    # Speech output: "system" uses the voices built into Windows (no download); "piper" uses a Piper voice file.
+    tts_engine: Literal["system", "piper"] = "system"
+    system_voice: str = Field("", max_length=200)
+    speech_rate: float = Field(0.0, ge=-1.0, le=1.0)
+    # Voice conversation: a spoken message is sent automatically and its reply is read aloud.
+    conversation_mode: bool = True
+    auto_stop_on_silence: bool = True
+    silence_seconds: float = Field(1.5, ge=0.5, le=5.0)
 
 
 class ToolSettings(_Section):
     # Deny by default: only side-effect-free status tools start enabled.
     enabled_tools: dict[str, bool] = Field(
-        default_factory=lambda: {"get_datetime": True, "get_app_info": True, "get_system_info": True}
+        default_factory=lambda: {
+            # Read-only and side-effect free:
+            "get_datetime": True, "get_app_info": True, "get_system_info": True, "calculate": True,
+            # Only write to GREEN's own database, and always ask first:
+            "create_reminder": True, "save_memory": True,
+        }
     )
     approved_directories: list[str] = Field(default_factory=list)
     output_directory: str = ""

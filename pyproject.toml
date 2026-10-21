@@ -7,7 +7,8 @@ requires-python = ">=3.11"
 dependencies = ["PySide6>=6.7,<7", "pydantic>=2.7,<3"]
 
 [project.optional-dependencies]
-voice = ["faster-whisper>=1.0,<2", "piper-tts>=1.2,<2", "sounddevice>=0.4.6,<1", "numpy>=1.26,<3"]
+voice = ["faster-whisper>=1.0,<2", "sounddevice>=0.4.6,<1", "numpy>=1.26,<3"]
+piper = ["piper-tts>=1.2,<2", "sounddevice>=0.4.6,<1", "numpy>=1.26,<3"]
 dev = ["pytest>=8,<10", "pytest-qt>=4.4,<5", "numpy>=1.26,<3"]
 
 [project.scripts]

@@ -59,7 +59,7 @@ class VoiceOutputService:
 
     def check(self) -> ComponentStatus:
         if self._voice_loader is None and not _module_available("piper"):
-            return ComponentStatus(False, "Piper is not installed (pip install -r requirements-voice.txt).")
+            return ComponentStatus(False, "Piper is not installed (pip install -r requirements-piper.txt).")
         if self._sd is None and not _module_available("sounddevice"):
             return ComponentStatus(False, "The 'sounddevice' package is not installed.")
         path = self._settings_provider().piper_model_path
@@ -119,10 +119,10 @@ class VoiceOutputService:
             raise VoiceError("Piper produced no audio.")
         return np.concatenate(chunks), int(sample_rate)
 
-    def speak(self, markdown: str) -> None:
+    def speak(self, markdown: str, *, respect_mute: bool = True) -> None:
         """Synthesize and play, blocking until finished or :meth:`stop` is called."""
         settings = self._settings_provider()
-        if settings.muted:
+        if respect_mute and settings.muted:
             return
         text = speakable_text(markdown)
         if not text:

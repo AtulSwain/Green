@@ -95,6 +95,11 @@ class ChatChunk:
     tool_calls: list[Any] = field(default_factory=list)
     done: bool = False
     done_reason: str | None = None
+    # Timing reported by Ollama in the final chunk (nanoseconds / token counts).
+    eval_count: int = 0
+    eval_duration_ns: int = 0
+    prompt_eval_count: int = 0
+    load_duration_ns: int = 0
 
 
 @dataclass
@@ -127,6 +132,13 @@ class OllamaStatus:
     @property
     def ready(self) -> bool:
         return self.reachable and self.model_installed
+
+
+def _int(value) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 def model_names_match(configured: str, installed: str) -> bool:
@@ -412,6 +424,10 @@ class OllamaService:
                 tool_calls=calls if isinstance(calls, list) else [calls],
                 done=bool(data.get("done")),
                 done_reason=data.get("done_reason"),
+                eval_count=_int(data.get("eval_count")),
+                eval_duration_ns=_int(data.get("eval_duration")),
+                prompt_eval_count=_int(data.get("prompt_eval_count")),
+                load_duration_ns=_int(data.get("load_duration")),
             )
 
     def complete(self, messages: list[dict[str, Any]], cancel: CancelToken | None = None) -> str:

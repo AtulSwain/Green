@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from pydantic import Field
 
@@ -56,15 +56,17 @@ class SaveMemoryTool(Tool):
 
 class CreateReminderArgs(ToolArgs):
     title: str = Field(..., min_length=1, max_length=200)
-    due: str = Field(..., description="Local date and time in ISO 8601 format, e.g. 2026-05-01T09:30")
+    due: str = Field("", description="Local date and time in ISO 8601 format, e.g. 2026-05-01T09:30")
+    in_minutes: int | None = Field(None, ge=1, le=60 * 24 * 365,
+                                   description="Alternative to 'due': minutes from now, e.g. 10 for 'in 10 minutes'")
     notes: str = Field("", max_length=2000)
 
 
 class CreateReminderTool(Tool):
     name = "create_reminder"
     description = (
-        "Create a reminder shown by GREEN at the given local time while GREEN is running. "
-        "Call get_datetime first if you need the current date."
+        "Create a reminder shown by GREEN at a local time while GREEN is running. Use in_minutes for "
+        "'in N minutes/hours'; for a clock time call get_datetime first and pass 'due'."
     )
     category = ToolCategory.CONTROLLED
     Args = CreateReminderArgs
@@ -74,6 +76,12 @@ class CreateReminderTool(Tool):
         self.context = context
 
     def prepare(self, args):
+        if args.in_minutes is not None:
+            if args.due:
+                raise ToolError("Give either 'due' or 'in_minutes', not both.")
+            return (datetime.now() + timedelta(minutes=args.in_minutes)).astimezone().replace(second=0, microsecond=0)
+        if not args.due:
+            raise ToolError("Give the reminder time as 'due' (ISO 8601) or 'in_minutes'.")
         try:
             due = datetime.fromisoformat(args.due)
         except ValueError as exc:

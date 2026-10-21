@@ -101,12 +101,20 @@ def build_report(services) -> DiagnosticsReport:
     if config.voice.enabled:
         stt = services.voice_input.check_engine()
         mic = services.voice_input.check_microphone()
-        tts = services.voice_output.check()
         report.add("Speech recognition", stt.detail, stt.available)
         report.add("Microphone", mic.detail, mic.available)
-        report.add("Speech output", tts.detail, tts.available)
+        if config.voice.tts_engine == "piper":
+            tts = services.voice_output.check()
+            report.add("Piper voice", tts.detail, tts.available)
     else:
-        report.add("Voice", "disabled in Settings")
+        report.add("Voice input", "off (turn on under Voice)")
+    try:
+        from PySide6.QtTextToSpeech import QTextToSpeech  # noqa: PLC0415
+
+        engines = ", ".join(QTextToSpeech.availableEngines()) or "none"
+        report.add("Speech output engines", f"{engines} (selected: {config.voice.tts_engine})")
+    except ImportError:
+        report.add("Speech output engines", "Qt text-to-speech not installed", False)
 
     enabled = sorted(n for n, on in config.tools.enabled_tools.items() if on)
     report.add("Enabled tools", ", ".join(enabled) or "(none)")

@@ -143,3 +143,40 @@ class ConversationService:
             (conversation_id, int(limit)),
         )
         return [_message(r) for r in rows]
+
+    def search(self, query: str, limit: int = 200) -> list[Conversation]:
+        """Conversations whose title or any message contains ``query`` (case-insensitive)."""
+        query = (query or "").strip().lower()
+        if not query:
+            return self.list()
+        like = "%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        rows = self.db.query_all(
+            "SELECT * FROM conversations c WHERE lower(c.title) LIKE ? ESCAPE '\\' OR EXISTS ("
+            "SELECT 1 FROM messages m WHERE m.conversation_id = c.id AND lower(m.content) LIKE ? ESCAPE '\\') "
+            "ORDER BY updated_at DESC LIMIT ?",
+            (like, like, int(limit)),
+        )
+        return [_conversation(r) for r in rows]
+
+    def delete_messages_after(self, conversation_id: str, message_id: int) -> int:
+        """Delete messages newer than ``message_id`` (used to regenerate the last reply)."""
+        with self.db.transaction() as conn:
+            return conn.execute(
+                "DELETE FROM messages WHERE conversation_id = ? AND id > ?", (conversation_id, int(message_id))
+            ).rowcount
+
+    def last_user_message(self, conversation_id: str) -> Message | None:
+        row = self.db.query_one(
+            "SELECT * FROM messages WHERE conversation_id = ? AND role = 'user' ORDER BY id DESC LIMIT 1",
+            (conversation_id,),
+        )
+        return _message(row) if row else None
+
+    def export_markdown(self, conversation_id: str) -> str:
+        conv = self.get(conversation_id)
+        lines = [f"# {conv.title}", "", f"_Exported from GREEN · {conv.created_at.astimezone():%d %b %Y %H:%M}_", ""]
+        for message in self.messages(conversation_id):
+            who = "You" if message.role == "user" else "GREEN"
+            stamp = message.created_at.astimezone().strftime("%d %b %Y %H:%M")
+            lines += [f"## {who} · {stamp}", "", message.content.rstrip(), ""]
+        return "\n".join(lines)

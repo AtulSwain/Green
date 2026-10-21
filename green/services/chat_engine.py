@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -60,6 +61,36 @@ class GenerationResult:
     error: str = ""
     tools_used: list[dict[str, Any]] = field(default_factory=list)
     notices: list[str] = field(default_factory=list)
+    stats: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class _Stats:
+    """Measured by Ollama and by wall clock; never estimated."""
+
+    started: float = field(default_factory=time.monotonic)
+    tokens: int = 0
+    eval_ns: int = 0
+    prompt_tokens: int = 0
+    load_ns: int = 0
+    requests: int = 0
+
+    def add(self, chunk) -> None:
+        if chunk.done:
+            self.tokens += chunk.eval_count
+            self.eval_ns += chunk.eval_duration_ns
+            self.prompt_tokens += chunk.prompt_eval_count
+            self.load_ns += chunk.load_duration_ns
+            self.requests += 1
+
+    def as_dict(self, model: str) -> dict[str, Any]:
+        result: dict[str, Any] = {"model": model, "seconds": round(time.monotonic() - self.started, 2)}
+        if self.tokens and self.eval_ns:
+            result["tokens"] = self.tokens
+            result["tokens_per_second"] = round(self.tokens / (self.eval_ns / 1e9), 1)
+        if self.load_ns > 500_000_000:
+            result["load_seconds"] = round(self.load_ns / 1e9, 1)
+        return result
 
 
 def format_memories(memories: list[MemoryRecord]) -> str:
@@ -163,6 +194,7 @@ class ChatEngine:
         current_raw = ""
         rounds = 0
         limit_reached = False
+        stats = _Stats()
 
         def visible() -> str:
             pieces = [*parts, strip_thinking(current_raw).strip()]
@@ -177,6 +209,7 @@ class ChatEngine:
                 offered = [] if limit_reached else schemas
                 try:
                     for chunk in self._stream(messages, cancel, offered):
+                        stats.add(chunk)
                         if chunk.thinking and not chunk.content:
                             on_status("Thinking…")
                         if chunk.content:
@@ -239,7 +272,8 @@ class ChatEngine:
                     conversation_id, "assistant", partial or "_(Stopped before a reply was written.)_",
                     status="cancelled", metadata={"tools": tools_used},
                 )
-            return GenerationResult("cancelled", partial, message, tools_used=tools_used, notices=notices)
+            return GenerationResult("cancelled", partial, message, tools_used=tools_used, notices=notices,
+                                    stats=stats.as_dict(config.ollama.model))
         except OllamaError as exc:
             partial = visible()
             message = None
@@ -255,11 +289,12 @@ class ChatEngine:
         if limit_reached:
             final += "\n\n_(GREEN stopped calling tools after reaching the limit of " \
                      f"{config.context.max_tool_rounds} tool steps.)_"
+        result_stats = stats.as_dict(config.ollama.model)
         message = self.conversations.add_message(
             conversation_id, "assistant", final,
-            metadata={"tools": tools_used, "model": config.ollama.model, "notices": notices},
+            metadata={"tools": tools_used, "model": config.ollama.model, "notices": notices, "stats": result_stats},
         )
-        return GenerationResult("complete", final, message, tools_used=tools_used, notices=notices)
+        return GenerationResult("complete", final, message, tools_used=tools_used, notices=notices, stats=result_stats)
 
     def _stream(self, messages, cancel, schemas):
         try:

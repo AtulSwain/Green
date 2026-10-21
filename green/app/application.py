@@ -36,7 +36,11 @@ def run(argv: list[str] | None = None) -> int:
         QMessageBox.critical(None, "GREEN cannot start", f"Could not prepare the data folder: {exc}")
         return 2
 
+    app.setQuitOnLastWindowClosed(False)  # GREEN may keep running in the tray; quitting is explicit
     window = MainWindow(services)
+    window.quit_app_on_close = True
+    window.setWindowIcon(window.app_icon)
+    app.setWindowIcon(window.app_icon)
     window.show()
     if services.startup_notices:
         QMessageBox.information(window, "GREEN", "\n\n".join(services.startup_notices))
