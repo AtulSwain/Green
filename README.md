@@ -24,6 +24,7 @@ By default nothing leaves your computer: no cloud AI, no analytics, no telemetry
 | Conversations | New, select, rename (F2), delete (Del), search (titles and message text), automatic titles, copy message, stop generation (Esc), retry after an error, **Regenerate** the last reply, **Export** to Markdown, persisted in SQLite across restarts |
 | Chat screen | Quick-start cards, code blocks with **Copy code**, message timestamps, **model switcher** in the header, measured speed under each reply (e.g. `qwen3:4b · 14.2 tok/s · 6.1 s`, as reported by Ollama) |
 | Voice conversation | Click **Talk** (Ctrl+M), speak, and recording stops by itself when you pause; your words are sent and the answer is read aloud. Live microphone level, **Read aloud** on any reply, Stop speaking, mute. Spoken answers use the voices built into Windows (no download) |
+| More models | Optional online or local services with an OpenAI-compatible API — Moonshot (Kimi), OpenRouter, SiliconFlow, Groq, Together, LM Studio — added under Settings → Online models and picked from the model menu. API keys live in Windows Credential Manager. One-time consent per online service, 🌐 label on online replies, status-bar warning, file tools withheld from online models unless allowed, Ollama `:cloud` models recognised as online |
 | Practical extras | `calculate` tool (exact math, safe parser), "remind me in 10 minutes", tray icon with reminder notifications and optional keep-running-in-tray |
 | Local model | Ollama connection and version check, installed-model check with `ollama pull` instructions, streaming responses, cancellation (interrupts even a blocked read), timeouts, out-of-memory and malformed-response handling, optional model download *only after you confirm* |
 | Memory | Preferences, project notes, facts, instructions, conversation summaries; view, search, filter, add, edit, delete, clear all (with confirmation); "Remember…" on any message; "Summarize to memory" with review before saving; only relevant memories are sent with a request |
@@ -188,6 +189,33 @@ on the Voice screen. Piper 1.3+ is GPL-3.0 licensed; check each voice's licence.
 If something is missing, GREEN says what and keeps working as a text assistant. On Windows, also check
 *Settings → Privacy & security → Microphone* allows desktop apps to use the microphone.
 
+## Online models (optional)
+
+Your local Ollama model is always the private default. You can also add services that run models on the
+internet, such as **Kimi** from Moonshot AI. Large models like Kimi K3 (about 2.8 trillion parameters) cannot run
+on a PC, so this is the only way to use them.
+
+1. Get an API key from the service (for Kimi: Moonshot AI's platform; OpenRouter also offers Kimi).
+2. In GREEN: **Settings → Online models → Add service…**, pick the service (address is filled in), paste the
+   API key, click **Fetch model list**, choose a model (e.g. `kimi-k3`) and click **Add**, then **Save**.
+3. Pick it from the **model menu** at the top of the chat (marked 🌐). GREEN asks once before sending anything
+   to that service.
+
+What changes when an online model is selected:
+
+- Your messages, relevant memories and tool results are sent to that service and handled under its terms. The
+  status bar shows where messages go, and online replies are labelled 🌐.
+- File and project tools (`read_text_file`, `list_directory`, `search_files`, `workspace_*`,
+  `propose_file_change`) are **not offered** to online models unless you tick *Allow file and project tools
+  with online models*.
+- The API key is stored in **Windows Credential Manager** (via `keyring`), never in GREEN's settings file,
+  database or logs. Online addresses must use `https://`.
+- Usage may cost money with the service; GREEN shows tokens/second and time for each reply.
+
+A local OpenAI-compatible server such as **LM Studio** (`http://127.0.0.1:1234/v1`) counts as local: no
+warning, no data leaves the PC. **Ollama cloud models** (names ending in `:cloud`) run on Ollama's servers; GREEN
+treats them as online even though Ollama itself is local.
+
 ## Speed tips
 
 The model runs on your own hardware, so speed depends on it. Each reply shows the measured speed.
@@ -280,7 +308,7 @@ GREEN treats the language model as untrusted. The model can only *request* a too
 | Model inference | Local Ollama at `127.0.0.1`. Changing the URL to another machine shows a warning before saving. |
 | Storage | Local SQLite database and JSON settings in your user profile. |
 | Internet | GREEN itself only contacts Ollama. Internet is used only when you click *Download model* (Ollama downloads it), allow a speech-model download, or approve opening a website. |
-| Third-party services | None. No analytics, telemetry, crash reporting or advertising. |
+| Third-party services | None by default. No analytics, telemetry, crash reporting or advertising. Online model services are used only if you add one and select it (see [Online models](#online-models-optional)). |
 
 ## Testing
 
@@ -294,7 +322,7 @@ Ollama, microphone, network or Windows: an in-process fake Ollama server (`tests
 responses, tool calls and errors over real HTTP, and voice tests use fake audio devices. Tests only touch
 temporary folders.
 
-Last run (Linux, Python 3.12.3, PySide6 6.12.0, offscreen): **254 passed, 3 skipped**. Two skips are
+Last run (Linux, Python 3.12.3, PySide6 6.12.0, offscreen): **278 passed, 3 skipped**. Two skips are
 Windows-only checks (`.exe`-only application rule, NTFS alternate data streams); the third checks behaviour
 without the voice packages, which were installed for this run.
 
@@ -340,7 +368,10 @@ Still requires manual testing on Windows:
 | Voice: *not installed* | `pip install -r requirements-voice.txt` in GREEN's PowerShell window (with `(.venv)` showing), then restart GREEN. |
 | Voice: recording never stops by itself | Your room may be noisy for the default sensitivity; click **Talk** again to stop, or turn off automatic stop on the Voice screen. |
 | No spoken answer | Check the Voice screen status and click **Test voice**. Make sure *Mute* is off and Windows has a voice installed. |
-| Replies are slow | See [Speed tips](#speed-tips). |
+| Replies are slow | See [Speed tips](#speed-tips), or use an online model. |
+| Online model: *rejected the API key* | Edit the service under Settings → Online models and paste the key again. |
+| Online model: *rate-limiting* / *payment* | Your quota or credit at that service is used up; check your account there. |
+| *Cannot store API keys* | `pip install -r requirements.txt` (installs `keyring`); on Windows it uses Credential Manager. |
 | Voice: *not available locally* | Choose a downloaded model folder or allow the one-time download in Settings → Voice. |
 | Voice: *No microphone available* | Connect a microphone and check Windows microphone privacy settings. |
 | Anything else | Open **Diagnostics**, run checks, and look at `%LOCALAPPDATA%\GREEN\logs\green.log`. |

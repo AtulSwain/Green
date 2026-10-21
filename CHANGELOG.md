@@ -1,5 +1,20 @@
 # Changelog
 
+## 2.0.1 — Stage 4: more models (optional online services)
+
+### Added
+- Additional model services with an OpenAI-compatible API (Moonshot/Kimi, OpenRouter, SiliconFlow, Groq,
+  Together, LM Studio or custom): streaming, tool calls with call ids, usage statistics, clear error messages.
+- Settings → Online models: add/edit/remove services, fetch their model list, API keys in the system
+  credential store (`keyring`; Windows Credential Manager).
+- Model menu lists local and online models; one-time consent per online service; 🌐 label on online replies;
+  status bar and Diagnostics show where messages go.
+- File and project tools are withheld from online models unless `tools.allow_file_tools_online` is enabled.
+- Ollama `:cloud` models are recognised as online.
+
+### Fixed
+- Number fields in Settings showed no value (hidden spin-box buttons collapsed the text area).
+
 ## 2.0.1 — Stage 3: voice conversation, practical features and UI polish
 
 ### Added
