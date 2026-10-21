@@ -37,3 +37,20 @@ The sandbox used for this work cannot reach `ollama.com` or `registry.ollama.ai`
 policy), so Ollama and the qwen3 models cannot be installed here. Tool calling is therefore verified against an
 in-process fake that implements Ollama's documented `/api/chat` tool-call format and `/api/show` capabilities,
 and must be confirmed manually with a real model.
+
+## Resolution
+
+| # | Resolution |
+| --- | --- |
+| D1 | Approval dialogs are non-modal (`ChatController` asks asynchronously); Stop withdraws a pending approval. Tested in `tests/test_gui_tools.py`. |
+| D2 | `ToolRegistry.invoke` checks the cancel token before and after approval, immediately before running. |
+| D3 | `ChatEngine.tool_support()` uses `/api/show` capabilities; unsupported models get no tools and a notice; unknown support falls back on rejection. |
+| D4 | `ErrorCode`, `Tool.describe()`, `Tool.summarize()`, `ToolEvent`; live tool steps in the chat. |
+| D5 | `create_text_file(overwrite=true)` with a separate destructive approval and backup. |
+| D6 | `open_website` confirmation rules with warnings; `tools.confirm_unlisted_websites`. |
+| D7 | `get_system_info` tool. |
+| D8 | Schema 2 migration; Tool activity screen with filters, auto-refresh and clear. |
+| D9 | `ToolCategory` is READ / CONTROLLED / RESTRICTED. |
+| D10 | Clear messages for missing folders and access denied. |
+| D11 | Final no-tools turn at the step limit. |
+| D12 | Messages store `ToolResult.to_record()` (description, outcome, summary). |

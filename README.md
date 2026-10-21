@@ -20,11 +20,12 @@ By default nothing leaves your computer: no cloud AI, no analytics, no telemetry
 
 | Area | What works |
 | --- | --- |
-| Desktop app | Sidebar with conversations and navigation, chat screen, Memory, Reminders, Workspace, Tools & Permissions, Voice, Settings and Diagnostics screens; dark and light themes; empty, loading and error states; status bar with live Ollama/model status |
+| Desktop app | Sidebar with conversations and navigation, chat screen, Memory, Reminders, Workspace, Tools & Permissions, Tool activity, Voice, Settings and Diagnostics screens; dark and light themes; empty, loading and error states; status bar with live Ollama/model status |
 | Conversations | New, select, rename (F2), delete (Del), automatic titles, copy message, stop generation (Esc), retry after an error, persisted in SQLite across restarts |
 | Local model | Ollama connection and version check, installed-model check with `ollama pull` instructions, streaming responses, cancellation (interrupts even a blocked read), timeouts, out-of-memory and malformed-response handling, optional model download *only after you confirm* |
 | Memory | Preferences, project notes, facts, instructions, conversation summaries; view, search, filter, add, edit, delete, clear all (with confirmation); "Remember…" on any message; "Summarize to memory" with review before saving; only relevant memories are sent with a request |
-| Tools | Deny-by-default registry, strict argument schemas, path canonicalization and containment, protected-file exclusion, confirmation dialogs for anything that changes something, audit log |
+| Tool calling | Model ↔ tool loop over Ollama's native tool-calling API; checks the model actually supports tools; validates every call; per-call approval for controlled actions (never remembered); live step display ("Reading file …", ✓/✗ with the real result); step limit with a final no-tools answer; Stop works before, during approval and between steps |
+| Tools | Deny-by-default registry, strict argument schemas, READ / CONTROLLED / RESTRICTED permissions, path canonicalization and containment, protected-file exclusion, non-blocking approval dialogs, Tool activity history |
 | Developer assistance | Choose a project folder; browse, filter, preview and search files; "Ask GREEN about this file"; model tools to list/read/search the project; proposed edits are shown as a coloured diff and applied only after approval, with a backup of the original |
 | Reminders | Create, edit, delete, mark complete; due reminders pop up while GREEN is running; model can propose reminders (with confirmation) |
 | Diagnostics | Version, Python, OS, PySide6, SQLite, Ollama reachability and version, configured model and whether it is installed, models currently loaded (as reported by Ollama), database integrity, voice availability, recent redacted warnings; copy report |
@@ -100,8 +101,8 @@ is available.
 ### First steps
 
 1. Send a message. Replies stream in; press **Stop** (or Esc) to cancel.
-2. Open **Tools & Permissions** to decide what the model may do. Only `get_datetime` and `get_app_info` are
-   enabled initially. File tools also need at least one approved folder (Folders tab).
+2. Open **Tools & Permissions** to decide what the model may do. Only `get_datetime`, `get_app_info` and
+   `get_system_info` are enabled initially. File tools also need at least one approved folder (Folders tab).
 3. Open **Workspace** to choose a project folder for code help.
 
 ## Where data is stored
@@ -141,11 +142,12 @@ starts with defaults.
 | `ui.theme` | `dark` | `dark` or `light` |
 | `ui.font_point_size` | `10` | Text size |
 | `ui.send_on_enter` | `true` | Enter sends; otherwise Ctrl+Enter |
-| `tools.enabled_tools` | `get_datetime`, `get_app_info` | Tool name → enabled |
+| `tools.enabled_tools` | `get_datetime`, `get_app_info`, `get_system_info` | Tool name → enabled |
 | `tools.approved_directories` | `[]` | Absolute folders readable by the file tools |
 | `tools.output_directory` | `""` | Where `create_text_file` may create new files |
 | `tools.approved_applications` | `{}` | Name → absolute path of an `.exe` that `open_application` may start |
-| `tools.allowed_websites` | `[]` | Host names (and their subdomains) `open_website` may open |
+| `tools.allowed_websites` | `[]` | Host names (and their subdomains) `open_website` opens without asking (https only) |
+| `tools.confirm_unlisted_websites` | `true` | Allow other sites after asking each time; `false` refuses them |
 | `tools.max_read_bytes` | `200000` | Maximum bytes read from one file |
 | `tools.max_results` | `200` | Maximum listing/search results |
 | `workspace.project_directory` | `""` | Project folder for the developer tools |
@@ -171,6 +173,42 @@ Voice is optional and off by default. Everything runs locally; audio is recorded
 If anything is missing, GREEN explains what and keeps working as a text assistant. On Windows, also check
 *Settings → Privacy & security → Microphone* allows desktop apps to use the microphone.
 
+## Tools and tool calling
+
+GREEN uses Ollama's documented tool-calling API (`tools` in `/api/chat`, structured `tool_calls` in the reply).
+Before offering tools GREEN asks Ollama whether the configured model supports them (`/api/show` →
+`capabilities`). If the model does not, GREEN answers without tools and tells you; Diagnostics and the status bar
+show the same. qwen3 models report tool support in current Ollama versions. Text in a reply that merely *looks*
+like a tool call is never executed.
+
+One reply works like this: the model sees the enabled tools → requests one or more calls → each call is checked
+(registered name → enabled → arguments valid → policy) → controlled tools ask you → the tool runs → its real
+result (or a structured error such as `permission_denied`, `policy_violation`, `declined_by_user`) goes back to
+the model → repeat until the model answers. After `context.max_tool_rounds` steps (default 4) the model gets one
+last turn without tools and must answer with what it has. At most 5 calls run per step.
+
+| Tool | Permission | Asks you? | What it does |
+| --- | --- | --- | --- |
+| `get_datetime` | Read | No | Local date, time and time zone |
+| `get_app_info` | Read | No | GREEN's non-sensitive settings (model, approved folders, enabled tools) |
+| `get_system_info` | Read | No | OS version (e.g. "Windows 11 (build 22631)"), Python, GREEN version, Ollama reachability, model and tool support. No user name, host name, environment variables or paths |
+| `list_directory` | Read | No | List a folder inside approved folders (result limit) |
+| `search_files` | Read | No | Search file names inside approved folders, skipping protected folders |
+| `read_text_file` | Read | No | Read a text/source file inside approved folders, truncated at `tools.max_read_bytes` |
+| `workspace_list_files`, `workspace_read_file`, `workspace_search_text` | Read | No | Same for the selected project folder |
+| `create_text_file` | Controlled | Every time | Create a file in the output folder. An existing file is replaced only if the model passes `overwrite=true` **and** you approve an "Overwrite existing file?" dialog showing the diff; a backup is kept |
+| `open_application` | Controlled | Every time | Start an approved `.exe` by its approved name; no arguments, no shell; reports a program that exits with an error immediately |
+| `open_website` | Controlled | When needed | Opens http(s) links only. Allow-listed sites over https open directly; other sites (if allowed in settings), plain http, raw IP addresses, unusual ports and look-alike international domains always ask, with the reason shown |
+| `save_memory`, `create_reminder` | Controlled | Every time | Store a memory / reminder in GREEN |
+| `propose_file_change` | Controlled | Every time | Show a diff for a project file and apply it only if approved (backup kept) |
+
+Approval dialogs do not block GREEN: you can keep reading, and **Stop** withdraws a pending approval so the action
+never runs. An approval covers that single call only.
+
+**Tool activity** (sidebar) lists every request with time, tool, permission decision, real outcome, a short
+summary and duration; you can filter to failures and clear the history. File contents and messages are not
+stored there.
+
 ## Security model
 
 GREEN treats the language model as untrusted. The model can only *request* a tool; GREEN decides.
@@ -183,18 +221,20 @@ GREEN treats the language model as untrusted. The model can only *request* a too
   rejected. Protected names are always hidden, even inside approved folders: `.env*`, keys and certificates
   (`*.pem`, `*.key`, `id_rsa*`, …), credential files, `.git`, `.ssh`, `.aws`, `node_modules`, virtual
   environments, browser cookie and password stores. Reads are size-limited and binary files are refused.
-- **Controlled write tools** (`create_text_file`, `propose_file_change`, `open_application`, `open_website`,
-  `save_memory`, `create_reminder`) always show a confirmation dialog with the exact target and content or diff.
-  Enter defaults to *Cancel*. New files are never overwritten; approved project edits keep a backup copy.
-  Applications must be approved `.exe` programs and are started without a shell and without arguments.
-  Websites must be on your allow-list.
+- **Controlled tools** (`create_text_file`, `propose_file_change`, `open_application`, `open_website`,
+  `save_memory`, `create_reminder`) show a confirmation dialog with the exact target and content or diff (see the
+  table above for when `open_website` asks). Enter defaults to *Cancel*. Files are only replaced after an explicit
+  overwrite approval, with a backup. Applications must be approved `.exe` programs and are started without a shell
+  and without arguments. Approvals are per call and are re-checked against the current settings.
+- **Errors fail closed.** If a tool's own safety check fails unexpectedly, the call is denied; it never falls
+  through to execution. Tools are fixed Python code: there is no `eval`, `exec`, shell or generated code.
 - **Restricted capabilities do not exist as tools:** no shell/PowerShell/CMD/Python execution, no credential or
   cookie access, no unrestricted filesystem access, no software installation, no security-setting changes.
 - **Prompt injection.** File contents and tool results are marked as untrusted data, and the system prompt tells
   the model not to follow instructions in them. This reduces but cannot eliminate the risk that a malicious
   document steers the model; the permission checks and confirmations above are what actually protect you.
-- **Audit log.** Every tool request is recorded with its decision and outcome (Tools & Permissions → Audit log).
-  File contents and messages are not recorded.
+- **Tool activity.** Every tool request is recorded with its decision, outcome, a redacted summary and
+  duration. File contents and messages are not recorded.
 - **Logs** never contain conversation text, and API keys, tokens, passwords and private keys are redacted.
 - **Links** in model replies are not clickable; use the `open_website` tool or copy the link.
 
@@ -227,18 +267,27 @@ Ollama, microphone, network or Windows: an in-process fake Ollama server (`tests
 responses, tool calls and errors over real HTTP, and voice tests use fake audio devices. Tests only touch
 temporary folders.
 
-Last run (Linux, Python 3.12.3, PySide6 6.12.0, offscreen): **138 passed, 2 skipped** — the two skips are
+Last run (Linux, Python 3.12.3, PySide6 6.12.0, offscreen): **203 passed, 2 skipped** — the two skips are
 Windows-only checks (`.exe`-only application rule and NTFS alternate data streams).
 
 ### Verification status
 
 Verified by automated tests: everything in the *Complete* table, including that the UI event loop keeps running
 during generation, that Stop and shutdown interrupt an active request, duplicate submissions are ignored,
-unauthorized tool calls and file access are refused, and malformed model tool calls are handled.
+unauthorized tool calls and file access are refused, and malformed model tool calls are handled. For tool
+calling specifically (`tests/test_stage2_tools.py`, `tests/test_tool_loop.py`, `tests/test_gui_tools.py`): the
+full request → validation → permission → approval → execution → result-to-model → final-answer loop, multiple
+calls per step, structured errors returned to the model, the step limit, models without tool support, text that
+only resembles a tool call, Ollama failures mid-loop, Stop before execution and during approval, non-blocking
+approval dialogs, GUI responsiveness while a slow tool runs, overwrite protection, URL and application
+allow-list rules, and the Tool activity history.
 
 Still requires manual testing on Windows:
 
-- A full conversation with a real Ollama model (qwen3:8b and qwen3:4b), including real tool calling.
+- A full conversation with a real Ollama model (qwen3:8b and qwen3:4b), including real tool calling: that the
+  model chooses sensible tools, passes valid arguments, and uses the results. The sandbox used for development
+  could not download Ollama or models, so tool calling was verified only against a fake server that follows
+  Ollama's documented API format.
 - Model download progress through *Download model…*.
 - Push-to-talk with a real microphone and faster-whisper model; Piper speech output.
 - `open_application` and `open_website` launching real programs and the default browser.
@@ -252,7 +301,8 @@ Still requires manual testing on Windows:
 | *Model … is not installed* | Run `ollama pull <model>` or pick an installed model under Settings → *Refresh list*. |
 | *Not enough memory* | Choose a smaller model (e.g. `qwen3:4b`), reduce *Context length*, or close other programs. |
 | Replies time out | The first reply loads the model and can be slow. Increase *Response timeout* in Settings. |
-| The model never uses tools | Enable the tools in Tools & Permissions and approve folders. Some models do not support tool calling; GREEN then continues without tools. |
+| The model never uses tools | Enable the tools in Tools & Permissions and approve folders. Check Diagnostics → *Tool calling*: if the model does not support tools, GREEN does not offer them; choose a model such as `qwen3:8b`. |
+| An action shows ✗ in the chat | The step text says why (not permitted, invalid request, declined, or the real error). Tool activity has the full history. |
 | A file tool says *outside the approved directories* or *protected* | Add the folder under Tools & Permissions → Folders. Protected files (keys, `.env`, `.git`, …) cannot be unlocked. |
 | *Settings file was invalid* on start | Your previous file was kept as `config.json.invalid-<time>` next to the new one. |
 | *Database could not be read and was moved aside* | The old file was kept as `green.db.corrupt-<time>`. You can inspect it with any SQLite tool. |
